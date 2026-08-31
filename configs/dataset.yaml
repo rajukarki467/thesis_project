@@ -1,0 +1,28 @@
+"""
+for example : 
+seed: 42
+
+dataset:
+  name: mitdb
+  sampling_frequency: 360
+
+preprocessing:
+  bandpass_low: 0.5
+  bandpass_high: 40.0
+
+model:
+  type: kan
+
+training:
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.001
+
+federated:
+  num_clients: 8
+  aggregation: fedavg
+
+results:
+  output_dir: results/baselines
+
+"""

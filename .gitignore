@@ -1,0 +1,315 @@
+# ============================================================
+# Thesis Project - Resource-Adaptive Federated KAN
+# ============================================================
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+
+# ============================================================
+# JUPYTER NOTEBOOKS
+# ============================================================
+
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Jupyter temporary files
+*.ipynb_checkpoints
+
+# ============================================================
+# ENVIRONMENT / SECRETS
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+# Local configuration
+config.local.yaml
+config.local.yml
+config.local.json
+
+# ============================================================
+# MIT-BIH / ECG DATASET
+# ============================================================
+
+# IMPORTANT:
+# Raw ECG dataset should NOT be committed to GitHub
+data/raw/*
+!data/raw/.gitkeep
+
+# Processed ECG data
+data/processed/*
+!data/processed/.gitkeep
+
+# Client partitions
+data/partitions/*
+!data/partitions/.gitkeep
+
+# Additional partition directories
+data/alpha_0.1/*
+data/alpha_0.5/*
+data/alpha_1.0/*
+
+!data/alpha_0.1/.gitkeep
+!data/alpha_0.5/.gitkeep
+!data/alpha_1.0/.gitkeep
+
+# ECG / WFDB generated files
+*.dat
+*.hea
+*.atr
+*.xws
+*.mat
+
+# ============================================================
+# MACHINE LEARNING DATA / ARTIFACTS
+# ============================================================
+
+# NumPy
+*.npy
+*.npz
+
+# Pickle / serialized datasets
+*.pkl
+*.pickle
+*.joblib
+
+# HDF5
+*.h5
+*.hdf5
+
+# Parquet
+*.parquet
+
+# ============================================================
+# MODEL CHECKPOINTS
+# ============================================================
+
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+checkpoints/
+models/
+saved_models/
+model_checkpoints/
+
+# ============================================================
+# RL / PPO / STABLE-BASELINES3
+# ============================================================
+
+ppo_logs/
+rl_logs/
+vec_normalize.pkl
+
+# Stable-Baselines3 checkpoints
+*.zip
+
+# NOTE:
+# This also ignores archives such as .zip datasets.
+# If you later need to commit a specific ZIP, use git add -f.
+
+# ============================================================
+# EXPERIMENT OUTPUTS
+# ============================================================
+
+results/runs/
+results/checkpoints/
+results/experiments/
+results/plots/
+results/tables/
+
+# Keep directory structure
+!results/
+!results/.gitkeep
+!results/logs/
+!results/logs/.gitkeep
+
+# ============================================================
+# LOGS
+# ============================================================
+
+*.log
+
+logs/
+results/logs/*
+
+!results/logs/
+!results/logs/.gitkeep
+
+# ============================================================
+# TENSORBOARD
+# ============================================================
+
+runs/
+tensorboard/
+events.out.tfevents.*
+
+# ============================================================
+# WEIGHTS & BIASES
+# ============================================================
+
+wandb/
+.wandb/
+
+# ============================================================
+# EXPERIMENT / TEMPORARY FILES
+# ============================================================
+
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+.coverage
+.coverage.*
+htmlcov/
+
+# ============================================================
+# IDEs / EDITORS
+# ============================================================
+
+.vscode/
+.idea/
+*.iml
+
+# VS Code local history
+.history/
+
+# ============================================================
+# OPERATING SYSTEM
+# ============================================================
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.directory
+
+# ============================================================
+# CUDA / COMPILATION
+# ============================================================
+
+*.cu.o
+*.cubin
+*.ptx
+*.nvcc
+
+# ============================================================
+# DOCUMENTATION BUILD
+# ============================================================
+
+docs/_build/
+_site/
+
+# ============================================================
+# LATEX
+# ============================================================
+
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.nav
+*.snm
+*.vrb
+
+# LaTeX temporary directories
+_build/
+
+# ============================================================
+# LARGE ARCHIVES
+# ============================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# ============================================================
+# DATABASE / LOCAL STORAGE
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================================
+# PROFILING / PERFORMANCE
+# ============================================================
+
+*.prof
+*.profraw
+
+# ============================================================
+# SYSTEM / TEMPORARY FILES
+# ============================================================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+
+# ============================================================
+# PROJECT-SPECIFIC LOCAL FILES
+# ============================================================
+
+local/
+scratch/
+tmp/
+temp/
+
+# ============================================================
+# KEEP IMPORTANT EMPTY DIRECTORIES
+# ============================================================
+
+!data/
+!data/raw/
+!data/processed/
+!data/partitions/
+
+!results/
+!results/logs/.git_old/
+.git_old/
