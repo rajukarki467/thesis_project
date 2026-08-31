@@ -123,7 +123,7 @@ sympy==1.13.1
 terminado==0.18.1
 threadpoolctl==3.6.0
 tinycss2==1.5.1
-torch==2.5.1+cu121
+torch==2.5.1
 torchaudio==2.5.1+cu121
 torchvision==0.20.1+cu121
 tornado==6.5.8
