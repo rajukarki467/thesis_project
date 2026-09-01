@@ -1,336 +1,265 @@
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-
-import numpy as np
-from scipy.signal import butter, filtfilt
+"""
+ECG preprocessing utilities for the MIT-BIH Arrhythmia Database
 
 
-# ---------------------------------------------------------------------
-# AAMI-style annotation mapping
-# ---------------------------------------------------------------------
+Pipeline:
+    Raw ECG
+        ↓
+    Band-pass filtering
+        ↓
+    R-peak detection
+        ↓
+    Beat segmentation
+        ↓
+    Beat normalization
+        ↓
+    Fixed-length representation
+"""
 
-AAMI_MAPPING = {
-    "N": "N",
-    "L": "N",
-    "R": "N",
-    "e": "N",
-    "j": "N",
+from __future__ import annotations
+from typing import Optional, Sequence
 
-    "A": "S",
-    "a": "S",
-    "J": "S",
-    "S": "S",
+import numpy as np 
+from scipy import signal
+from scipy.signal import butter,filtfilt,find_peaks,resample
 
-    "V": "V",
-    "E": "V",
+# default preprocessing parameters
 
-    "F": "F",
+DEFAULT_LOW_CUT = 0.5
+DEFAULT_HIGH_CUT = 40.0
+DEFAULT_FILTER_ORDER = 4
 
-    "/": "Q",
-    "f": "Q",
-    "Q": "Q",
-}
+DEFAULT_BEAT_BEFORE = 0.2
+DEFAULT_BEAT_AFTER = 0.4
+
+DEFAULT_FEATURE_LENGTH = 32
+
+# Validation helpers
+def _validate_signal(signal:np.ndarray) -> np.ndarray:
+    """validate and convert  an ECG signal to a 1-D float array"""
+    signal = np.asarray(signal,dtype=np.float64)
+
+    if signal.ndim != 1:
+        raise ValueError(f"Expecteda 1-D ECG signal ,got shape{signal.shape}.")
+
+    if signal.size == 0:
+        raise ValueError("ECG signal is empty.")
+
+    if not np.all(np.isfinite(signal)):
+        raise ValueError("ECG signal contains NaN or infinite values.")
+
+    return signal 
 
 
-def map_annotation_symbol(
-    symbol: str
-) -> Optional[str]:
+# step 1 : Band-pass filtering
+
+def bandpass_filter(
+        signal : np.ndarray,
+        fs: float,
+        low_cut: float = DEFAULT_LOW_CUT,
+        high_cut: float =DEFAULT_HIGH_CUT,
+        order: int = DEFAULT_FILTER_ORDER,
+) -> np.ndarray:
     """
-    Map a MIT-BIH annotation symbol
-    to an AAMI-style class.
+    Apply a Butterwoth band-pass filter to an ECG signal .
 
-    Returns None for symbols that
-    are not part of the selected
-    heartbeat classes.
+    parametr:
+    --------------
+    signal : 1-D ECG signal
+    fs: Sampling frequency in Hz
+    low_cut : Lower cutoff frequency in Hz
+    high_cut : upper cutoff frequency in Hz
+    order: Butterwoth filter order.
+
+    returns:
+    ---------------
+    np.ndarray: Filter ECG signal.
+
     """
 
-    return AAMI_MAPPING.get(
-        symbol,
-        None
+    signal = _validate_signal(signal)
+
+    if fs <= 0:
+        raise ValueError("Sampling frequency must be positive.")
+
+    if not 0 < low_cut < high_cut < fs /2 :
+        raise ValueError(
+            "Cutoff Frequency must satisfy "
+            "0 < low_cut < high_cut < Nyquist frequency."
+        )
+
+    if order < 1: 
+        raise ValueError("Filter order Must be > =1 ")
+
+    nyquist = fs /2.0
+    low = low_cut /nyquist
+    high = high_cut/nyquist
+
+    b,a = butter(order,[low,high],btype='bandpass')
+    return filtfilt(b,a,signal)
+
+
+# Step 2 : R-peak detection
+
+def detect_r_peaks(
+    signal: np.ndarray,
+    fs: float,
+    distance_seconds: float = 0.25,
+    prominance: Optional[float] = None,   
+) -> np.ndarray:
+    """"
+    Detect candidate R-peaks in an ECG signal.
+
+    This funcion provides the initial peak-detection interface.
+    Validate against MIT_BIH  annotations will be perfoms.
+
+    """
+
+    signal = _validate_signal(signal)
+
+    if fs <= 0:
+        raise ValueError("Sampling frequency must be positive.")
+
+    distance_samples = max(
+        1,int(distance_seconds*fs),
+    )
+
+    peaks, _ = find_peaks(
+        signal,
+        distance=distance_samples,
+        prominence=prominance,
+    )
+
+    return peaks.astype(np.int64)
+
+
+# Step 3 : Beat Segmentation
+
+def segment_beats(
+    signal: np.ndarray,
+    r_peaks : Sequence[int],
+    fs: float,
+    before : float = DEFAULT_BEAT_BEFORE,
+    after : float = DEFAULT_BEAT_AFTER,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extract fixed-window beats around  detected p-peaks.
+
+    parameters:
+    ---------------
+    signal: 1-D ECG signal.
+    r_peaks: Sample indices of detected R-peaks.
+    fs: Sampling Frequency.
+    before : seconds before each R-peak.
+    after : Second after each R-peaks.
+
+    return 
+    -------
+    beats: Array with Shape (number_of_valid_beats, Beats_length).
+    valid-peaks:
+    R-peaks positions corresponding to returned beats
+    """
+
+    signal = _validate_signal(signal)
+    if fs <= 0:
+        raise ValueError("Sampling frequency must be positive.")
+
+    if before <= 0 or after <= 0 :
+        raise ValueError("Before and after must be positive.")
+
+    r_peaks = np.array(r_peaks,dtype=np.int64)
+
+    before_samples = int (round(before * fs))
+    after_samples = int (round(after * fs))
+
+    beats = []
+    valid_peaks = []
+
+    for peak in r_peaks:
+        start = peak - before_samples
+        end = peak + after_samples
+
+        if start < 0 or  end > len(signal):
+            continue
+
+        beat = signal[start:end]
+        if len(beat) != before_samples + after_samples:
+            continue
+
+        beats.append(beat)
+        valid_peaks.append(peak)
+
+    if not beats:
+        return (
+            np.empty((0, before_samples + after_samples)),
+            np.empty((0,), dtype=np.int64),
+        )    
+
+    return (
+        np.asarray(beats, dtype=np.float64),
+        np.asarray(valid_peaks, dtype=np.int64),
     )
 
 
-# ---------------------------------------------------------------------
-# ECG filtering
-# ---------------------------------------------------------------------
+# Step 4 : Beat Normalization 
 
-def bandpass_filter(
-    signal: np.ndarray,
-    fs: float,
-    lowcut: float = 0.5,
-    highcut: float = 40.0,
-    order: int = 4
-) -> np.ndarray:
+def normalize_signal(
+        signal : np.ndarray,
+        epsilon: float = 1e-8
+ ) -> np.ndarra:
     """
-    Apply a Butterworth band-pass filter.
+    Normalize an ECG signal using z-score normalization.
 
     Parameters
     ----------
     signal : np.ndarray
-        One-dimensional ECG signal.
-
-    fs : float
-        Sampling frequency.
-
-    lowcut : float
-        Lower cutoff frequency.
-
-    highcut : float
-        Upper cutoff frequency.
-
-    order : int
-        Butterworth filter order.
-    """
-
-    nyquist = 0.5 * fs
-
-    low = lowcut / nyquist
-    high = highcut / nyquist
-
-    b, a = butter(
-        order,
-        [low, high],
-        btype="band"
-    )
-
-    filtered = filtfilt(
-        b,
-        a,
-        signal
-    )
-
-    return filtered
-
-
-# ---------------------------------------------------------------------
-# Normalization
-# ---------------------------------------------------------------------
-
-def zscore_normalize(
-    signal: np.ndarray
-) -> np.ndarray:
-    """
-    Normalize one ECG segment.
-    """
-
-    mean = np.mean(signal)
-    std = np.std(signal)
-
-    if std < 1e-8:
-        return signal - mean
-
-    return (
-        signal - mean
-    ) / std
-
-
-# ---------------------------------------------------------------------
-# Beat extraction
-# ---------------------------------------------------------------------
-
-def extract_beat_segments(
-    signal: np.ndarray,
-    annotation_samples: np.ndarray,
-    annotation_symbols: List[str],
-    fs: float,
-    before_seconds: float = 0.2,
-    after_seconds: float = 0.4,
-    normalize: bool = True
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """
-    Extract fixed-length ECG beat segments
-    around annotation locations.
+        Input ECG signal.
+    epsilon : float, optional
+        Small value to avoid division by zero (default is 1e-8).
 
     Returns
     -------
-    X : np.ndarray
-        Shape: (number_of_beats, segment_length)
-
-    y : np.ndarray
-        Integer class labels.
-
-    symbols : list[str]
-        Original annotation symbols.
+    np.ndarray
+        Normalized ECG signal.
+        Normally have :
+        mean = 0
+        standard deviation = 1
     """
+    signal  = _validate_signal(signal)
+    mean = np.mean(signal)
+    std = np.std(signal)
 
-    before_samples = int(
-        before_seconds * fs
-    )
+    if std < epsilon:
+        return signal - mean
 
-    after_samples = int(
-        after_seconds * fs
-    )
-
-    segment_length = (
-        before_samples
-        + after_samples
-    )
-
-    X = []
-    y = []
-    original_symbols = []
-
-    class_to_id = {
-        "N": 0,
-        "S": 1,
-        "V": 2,
-        "F": 3,
-        "Q": 4,
-    }
-
-    for sample, symbol in zip(
-        annotation_samples,
-        annotation_symbols
-    ):
-
-        class_name = map_annotation_symbol(
-            symbol
-        )
-
-        if class_name is None:
-            continue
-
-        start = (
-            sample
-            - before_samples
-        )
-
-        end = (
-            sample
-            + after_samples
-        )
-
-        # Ignore annotations too close
-        # to the beginning or end.
-        if start < 0:
-            continue
-
-        if end > len(signal):
-            continue
-
-        segment = signal[
-            start:end
-        ]
-
-        if len(segment) != segment_length:
-            continue
-
-        if normalize:
-            segment = zscore_normalize(
-                segment
-            )
-
-        X.append(segment)
-
-        y.append(
-            class_to_id[class_name]
-        )
-
-        original_symbols.append(
-            symbol
-        )
-
-    if not X:
-        raise ValueError(
-            "No valid heartbeat segments extracted."
-        )
-
-    return (
-        np.asarray(X, dtype=np.float32),
-        np.asarray(y, dtype=np.int64),
-        original_symbols
-    )
+    return (signal - mean) / std
 
 
-def process_all_records(
-    records,
-    data_dir,
-    channel_index=0,
-    before_seconds=0.2,
-    after_seconds=0.4,
-):
+# Step 5 : Fixed-length representation
+
+def extract_feature(
+        beats: np.ndarray,
+        feature_length: int = DEFAULT_FEATURE_LENGTH
+) -> np.ndarray:
     """
-    Process all records and return
-    concatenated ECG beat dataset.
+    convert the variable -length beats into fixed -length representation .
+
+    Each beat is resampled to 'feature_length' samples.
     """
+    beats = np.asarray(beats, dtype=np.float64)
 
-    from src.dataset import (
-        load_record,
-        load_annotations
+    if beats.ndim != 2:
+        raise ValueError(f"Expected 2-D array of beats, got shape {beats.shape}.")
+
+    if feature_length <= 0:
+        raise ValueError("Feature length must be positive.")
+
+    if beats.shape[0] == 0:
+        return np.empty((0, feature_length), dtype=np.float64)
+
+    features = np.asarray(
+        [resample(beat, feature_length) for beat in beats],
+        dtype=np.float64,
     )
 
-    all_X = []
-    all_y = []
-    all_record_ids = []
-    all_symbols = []
-
-    for record_name in records:
-
-        print(
-            f"Processing record {record_name}..."
-        )
-
-        record = load_record(
-            record_name,
-            data_dir
-        )
-
-        annotation = load_annotations(
-            record_name,
-            data_dir
-        )
-
-        signal = record.p_signal[
-            :, channel_index
-        ]
-
-        signal = bandpass_filter(
-            signal,
-            record.fs
-        )
-
-        X, y, symbols = extract_beat_segments(
-            signal,
-            annotation.sample,
-            annotation.symbol,
-            record.fs,
-            before_seconds,
-            after_seconds,
-            normalize=True
-        )
-
-        all_X.append(X)
-        all_y.append(y)
-
-        all_record_ids.extend(
-            [record_name] * len(y)
-        )
-
-        all_symbols.extend(
-            symbols
-        )
-
-    X = np.concatenate(
-        all_X,
-        axis=0
-    )
-
-    y = np.concatenate(
-        all_y,
-        axis=0
-    )
-
-    record_ids = np.asarray(
-        all_record_ids
-    )
-
-    symbols = np.asarray(
-        all_symbols
-    )
-
-    return (
-        X,
-        y,
-        record_ids,
-        symbols
-    )
+    return features
