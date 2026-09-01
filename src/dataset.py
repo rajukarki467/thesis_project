@@ -1,40 +1,32 @@
-from pathlib import Path 
-from typing import List,Dict,Optional
+from pathlib import Path
+from typing import List, Optional
 
-import numpy as np
-import pandas as pd 
 import wfdb
 
 
+def get_record_ids(raw_dir: Path) -> List[str]:
+    records_file = raw_dir / "RECORDS"
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    if not records_file.exists():
+        raise FileNotFoundError(
+            f"RECORDS file does not exist: {records_file}"
+        )
 
-DEFAULT_DATA_DIR = (
-    PROJECT_ROOT /"data" /"raw" /"mit-bih-arrhythmia-database-1.0.0"
+    return [
+        line.strip()
+        for line in records_file.read_text().splitlines()
+        if line.strip()
+    ]
 
-)
 
-def get_record_name(data_dir:Optional[Path] =None) -> List[str] :
-    """
-    Discover all WFDB record from .hea files.
-    
-    Parameters
-    ----------
-    data_dir : str,Optional
-    Directory containing MIT-BIH Arrhythmia Database .hea/.dat/.atr files.
-
-    Returns
-    ----------
-    list[str]
-    Sorted record names without file extensions.
-
-    """
-
-    data_path = Path(data_dir) if data_dir else DEFAULT_DATA_DIR
-    if not data_path.exists():
-        raise FileNotFoundError(F"Dataset directory doesnot exist: \n{data_path}")
-
-    records = sorted(
-        file.stem for file in data_path.glob("*.hea")
-        
+def load_record(raw_dir: Path, record_id: str):
+    record = wfdb.rdrecord(
+        str(raw_dir / record_id)
     )
+
+    annotation = wfdb.rdann(
+        str(raw_dir / record_id),
+        "atr"
+    )
+
+    return record, annotation
