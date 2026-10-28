@@ -326,11 +326,27 @@ class PPOController:
         self.model.save(str(save_path))
         logger.info(f"Saved PPO controller checkpoint to {save_path}")
 
-    def load(self, path: Union[str, Path], env: Optional[gym.Env] = None) -> PPOController:
-        """Load saved PPO controller checkpoint."""
+    def load(
+        self,
+        path: Union[str, Path],
+        env: Optional[gym.Env] = None,
+    ) -> PPOController:
+        """Load saved PPO controller checkpoint into this instance."""
         target_env = env if env is not None else self.env
         self.model = PPO.load(str(path), env=target_env, device=self.device_str)
         if target_env is not None:
             self.env = target_env
         logger.info(f"Loaded PPO controller checkpoint from {path}")
         return self
+
+    @classmethod
+    def load_from_checkpoint(
+        cls,
+        path: Union[str, Path],
+        env: Optional[gym.Env] = None,
+        config_path: str = "configs/ppo.yaml",
+    ) -> PPOController:
+        """Factory classmethod to construct and load PPOController."""
+        inst = cls(config_path=config_path, env=env, verbose=0)
+        inst.load(path, env=env)
+        return inst

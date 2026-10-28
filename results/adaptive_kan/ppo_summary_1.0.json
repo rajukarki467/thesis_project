@@ -1,0 +1,19 @@
+{
+  "controller": "PPOController",
+  "alpha": 1.0,
+  "num_rounds": 3,
+  "num_clients": 8,
+  "seed": 42,
+  "total_eval_duration_seconds": 14.76587579399984,
+  "initial_accuracy": 0.07383768913342503,
+  "final_accuracy": 0.7276478679504814,
+  "initial_macro_f1": 0.05213705425700579,
+  "final_macro_f1": 0.31146086995623,
+  "final_loss": 0.8381924300344643,
+  "mean_parameters_per_round": 49106.666666666664,
+  "mean_training_latency_per_round": 3.958159974667069,
+  "mean_controller_overhead_ms": 1.2088993332023772,
+  "peak_ram_mb": 530.7734375,
+  "peak_gpu_mb": 0.0,
+  "total_reward": 0.32648504192057165
+}

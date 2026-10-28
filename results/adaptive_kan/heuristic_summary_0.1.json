@@ -1,0 +1,16 @@
+{
+  "controller": "HeuristicController",
+  "alpha": 0.1,
+  "num_rounds": 3,
+  "num_clients": 8,
+  "seed": 42,
+  "total_execution_time_seconds": 16.402605846999904,
+  "initial_accuracy": 0.07383768913342503,
+  "final_accuracy": 0.8587620357634113,
+  "initial_macro_f1": 0.05213705425700579,
+  "final_macro_f1": 0.35659530878804135,
+  "final_loss": 0.9084004961944184,
+  "mean_parameters_per_round": 46344.0,
+  "mean_latency_per_round": 4.49312470266644,
+  "total_reward": 0.4525257374379952
+}
