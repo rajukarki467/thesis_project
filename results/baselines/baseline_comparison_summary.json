@@ -1,0 +1,101 @@
+[
+  {
+    "Algorithm": "FedAvg-MLP",
+    "Alpha": 0.1,
+    "Model": "MLP",
+    "Active Parameters": 5477,
+    "Final Accuracy": 0.7566437414030261,
+    "Final Macro F1": 0.26274485756528965,
+    "Final Micro F1": 0.7566437414030261,
+    "Comm (MB)": 1.00286865234375,
+    "Avg Latency (s)": 0.28765637629169305
+  },
+  {
+    "Algorithm": "FedAvg-KAN",
+    "Alpha": 0.1,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.8682806052269602,
+    "Final Macro F1": 0.3630958912516493,
+    "Final Micro F1": 0.8682806052269602,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.4715036010416422
+  },
+  {
+    "Algorithm": "FedProx-KAN",
+    "Alpha": 0.1,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.8662448418156808,
+    "Final Macro F1": 0.3617815556940644,
+    "Final Micro F1": 0.8662448418156808,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.5884588190833142
+  },
+  {
+    "Algorithm": "FedAvg-MLP",
+    "Alpha": 0.5,
+    "Model": "MLP",
+    "Active Parameters": 5477,
+    "Final Accuracy": 0.758404401650619,
+    "Final Macro F1": 0.32882651373583865,
+    "Final Micro F1": 0.758404401650619,
+    "Comm (MB)": 1.00286865234375,
+    "Avg Latency (s)": 0.28079557770839375
+  },
+  {
+    "Algorithm": "FedAvg-KAN",
+    "Alpha": 0.5,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.8369188445667125,
+    "Final Macro F1": 0.4316477969732112,
+    "Final Micro F1": 0.8369188445667125,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.48013861120839846
+  },
+  {
+    "Algorithm": "FedProx-KAN",
+    "Alpha": 0.5,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.8266850068775791,
+    "Final Macro F1": 0.42121666165985844,
+    "Final Micro F1": 0.8266850068775791,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.5632457437499928
+  },
+  {
+    "Algorithm": "FedAvg-MLP",
+    "Alpha": 1.0,
+    "Model": "MLP",
+    "Active Parameters": 5477,
+    "Final Accuracy": 0.7473452544704264,
+    "Final Macro F1": 0.326194986523544,
+    "Final Micro F1": 0.7473452544704264,
+    "Comm (MB)": 1.00286865234375,
+    "Avg Latency (s)": 0.27551319404170727
+  },
+  {
+    "Algorithm": "FedAvg-KAN",
+    "Alpha": 1.0,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.7719944979367263,
+    "Final Macro F1": 0.3848125045913362,
+    "Final Micro F1": 0.7719944979367263,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.5034882515832729
+  },
+  {
+    "Algorithm": "FedProx-KAN",
+    "Alpha": 1.0,
+    "Model": "KAN",
+    "Active Parameters": 5349,
+    "Final Accuracy": 0.7452544704264099,
+    "Final Macro F1": 0.33094479795624976,
+    "Final Micro F1": 0.7452544704264099,
+    "Comm (MB)": 0.97943115234375,
+    "Avg Latency (s)": 0.596202300374955
+  }
+]

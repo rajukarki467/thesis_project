@@ -1,0 +1,24 @@
+{
+  "algorithm": "FedAvg-MLP",
+  "strategy": "fedavg",
+  "model_type": "mlp",
+  "alpha": 0.1,
+  "proximal_mu": 0.0,
+  "parameters_count": 5477,
+  "num_rounds": 3,
+  "num_clients": 8,
+  "final_test_loss": 1.085209610907635,
+  "final_test_accuracy": 0.7566437414030261,
+  "final_test_macro_f1": 0.26274485756528965,
+  "final_test_micro_f1": 0.7566437414030261,
+  "total_communication_mb": 1.00286865234375,
+  "mean_client_latency_sec": 0.28765637629169305,
+  "mean_input_variance": 0.6848638728260994,
+  "per_class_f1": {
+    "N": 0.8505747126436781,
+    "SVEB": 0.0,
+    "VEB": 0.0,
+    "F": 0.0,
+    "Q": 0.4631495751827702
+  }
+}

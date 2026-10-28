@@ -1,0 +1,24 @@
+{
+  "algorithm": "FedAvg-KAN",
+  "strategy": "fedavg",
+  "model_type": "kan",
+  "alpha": 1.0,
+  "proximal_mu": 0.0,
+  "parameters_count": 5349,
+  "num_rounds": 3,
+  "num_clients": 8,
+  "final_test_loss": 0.7483192442650645,
+  "final_test_accuracy": 0.7719944979367263,
+  "final_test_macro_f1": 0.3848125045913362,
+  "final_test_micro_f1": 0.7719944979367263,
+  "total_communication_mb": 0.97943115234375,
+  "mean_client_latency_sec": 0.5034882515832729,
+  "mean_input_variance": 0.6561107039451599,
+  "per_class_f1": {
+    "N": 0.8931274825751331,
+    "SVEB": 0.13043478260869565,
+    "VEB": 0.3889168765743073,
+    "F": 0.0,
+    "Q": 0.5115833811985449
+  }
+}

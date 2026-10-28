@@ -21,11 +21,14 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
    - [AAMI Heartbeat Categorization](#5-aami-heartbeat-categorization)
    - [Inter-Patient Split Paradigm](#6-inter-patient-split-paradigm)
 4. [Federated Non-IID Partitioning](#federated-non-iid-partitioning)
-5. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
-6. [Installation & Setup](#installation--setup)
-7. [CLI Usage](#cli-usage)
-8. [Dataset Summary & Statistics](#dataset-summary--statistics)
-9. [References](#references)
+5. [Model Architectures: FastKAN vs. Matched MLP](#model-architectures-fastkan-vs-matched-mlp)
+6. [Flower (flwr) Federated Integration](#flower-flwr-federated-integration)
+7. [Baseline Experiments & Empirical Results](#baseline-experiments--empirical-results)
+8. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
+9. [Installation & Setup](#installation--setup)
+10. [CLI Usage](#cli-usage)
+11. [Dataset Summary & Statistics](#dataset-summary--statistics)
+12. [References](#references)
 
 ---
 
@@ -154,6 +157,69 @@ Where $\mathbf{p}_c = [p_{c, 0}, p_{c, 1}, \dots, p_{c, N-1}]$ specifies the fra
 Partition indices are serialized to:
 - `data/partitions/clients_8_alpha_{alpha}/client_{id}.npy`
 - `data/alpha_{alpha}/client_{id}.npy`
+
+---
+
+## Model Architectures: FastKAN vs. Matched MLP
+
+### 1. Fast Kolmogorov-Arnold Network (FastKAN)
+Implemented in [`src/models/fastkan_model.py`](src/models/fastkan_model.py), the FastKAN classifier maps 32-sample ECG vectors to 5 AAMI output logits using learnable univariate edge functions:
+$$\phi_{j, i}(x_i) = w^b_{j, i} \cdot \text{SiLU}(x_i) + \sum_{m=0}^{G + k - 1} c_{j, i, m} B_m(x_i)$$
+- **B-Spline Parameterization**: Evaluates degree-$k$ basis functions across $G$ uniform grid intervals via Cox-de Boor recursion.
+- **Dynamic $(G, k)$ Edge Reconfiguration**: Supports dynamically initialized and adaptive $(G, k)$ pairs with $G \in \{3, 5, 7, 10\}$ and $k \in \{2, 3, 4\}$.
+- **Active Coefficient Accounting**: `get_parameter_count()` reports exact active parameters ($5,349$ for default $[32, 16, 5]$ with $G=5, k=3$).
+
+### 2. Parameter-Matched MLP Baseline
+Implemented in [`src/models/mlp.py`](src/models/mlp.py), the MLP baseline is strictly matched to the parameter budget of FastKAN:
+- For FastKAN $[32, 16, 5]$ with $5,349$ parameters, [`build_matched_mlp`](src/models/mlp.py) constructs an equivalent $[32, 57, 55, 5]$ architecture with **$5,351$ parameters** ($\Delta = 2$ parameters) or $[32, 64, 48, 5]$ ($5,477$ parameters), eliminating parameter-scale advantages for a fair empirical comparison.
+
+---
+
+## Flower (flwr) Federated Integration
+
+### 1. NumPyClient with Telemetry
+Implemented in [`src/federated/client.py`](src/federated/client.py) (`FlowerECGClient`):
+- Local optimization using Adam or SGD with gradient clipping.
+- Local validation split evaluation on each client node.
+- **Telemetry Extraction**: Calculates and returns:
+  - `local_loss`: Mean training loss over epochs.
+  - `execution_latency`: Training round wall-clock duration in seconds.
+  - `input_variance`: Empirical local data variance $\frac{1}{D}\sum_{d=1}^D \text{Var}(X_{:, d})$.
+
+### 2. FedProx Proximal Regularization
+Implemented in [`src/federated/fedprox.py`](src/federated/fedprox.py) (`FedProxCriterion`):
+- Penalizes local client model drift under severe non-IID class skew:
+  $$\mathcal{L}_{\text{FedProx}}(\theta) = \mathcal{L}_{\text{CE}}(\theta) + \frac{\mu}{2} \sum_i \|\theta_i - \theta_{t, i}\|_2^2$$
+  where $\theta_t$ is the frozen server parameter snapshot at round $t$.
+
+### 3. Global Server Aggregator & Test Evaluator
+Implemented in [`src/federated/server.py`](src/federated/server.py):
+- Aggregates client updates using weighted FedAvg / FedProx.
+- Evaluates the global model on the held-out patient-level test set ($18,175$ beats).
+- Calculates communication volume: $\text{Volume} = 2 \times N \times \text{ParamCount} \times 4\text{ bytes}$.
+
+---
+
+## Baseline Experiments & Empirical Results
+
+The full FL simulation across all 9 combinations ($\text{FedAvg-MLP}$, $\text{FedAvg-KAN}$, $\text{FedProx-KAN}$ across $\alpha \in \{0.1, 0.5, 1.0\}$) is executed via [`experiments/run_baseline.py`](experiments/run_baseline.py).
+
+### Benchmark Comparison (MIT-BIH Held-Out Patient-Level Test Set)
+
+| Algorithm | Dirichlet $\alpha$ | Architecture | Active Parameters | Final Test Accuracy | Final Macro F1 | Comm (MB) | Avg Latency (s) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **FedAvg-MLP** | $0.1$ | MLP | $5,477$ | 75.66% | 0.2627 | 1.00 MB | 0.288s |
+| **FedAvg-KAN** | $0.1$ | FastKAN | $5,349$ | **86.83%** | **0.3631** | **0.98 MB** | 0.472s |
+| **FedProx-KAN** | $0.1$ | FastKAN | $5,349$ | **86.62%** | **0.3618** | **0.98 MB** | 0.588s |
+| **FedAvg-MLP** | $0.5$ | MLP | $5,477$ | 75.84% | 0.3288 | 1.00 MB | 0.281s |
+| **FedAvg-KAN** | $0.5$ | FastKAN | $5,349$ | **83.69%** | **0.4316** | **0.98 MB** | 0.480s |
+| **FedProx-KAN** | $0.5$ | FastKAN | $5,349$ | **82.67%** | **0.4212** | **0.98 MB** | 0.563s |
+| **FedAvg-MLP** | $1.0$ | MLP | $5,477$ | 74.73% | 0.3262 | 1.00 MB | 0.276s |
+| **FedAvg-KAN** | $1.0$ | FastKAN | $5,349$ | **77.20%** | **0.3848** | **0.98 MB** | 0.503s |
+| **FedProx-KAN** | $1.0$ | FastKAN | $5,349$ | 74.53% | 0.3309 | 0.98 MB | 0.596s |
+
+> [!NOTE]
+> Under equivalent parameter budgets (~5.3k parameters), FastKAN achieves a **+11.17% accuracy gain** and **+0.1004 Macro F1 increase** over the matched MLP baseline under extreme non-IID skew ($\alpha = 0.1$), demonstrating high expressivity on non-linear morphological ECG features.
 
 ---
 

@@ -1,0 +1,24 @@
+{
+  "algorithm": "FedProx-KAN",
+  "strategy": "fedprox",
+  "model_type": "kan",
+  "alpha": 0.5,
+  "proximal_mu": 0.01,
+  "parameters_count": 5349,
+  "num_rounds": 3,
+  "num_clients": 8,
+  "final_test_loss": 0.6195297675726338,
+  "final_test_accuracy": 0.8266850068775791,
+  "final_test_macro_f1": 0.42121666165985844,
+  "final_test_micro_f1": 0.8266850068775791,
+  "total_communication_mb": 0.97943115234375,
+  "mean_client_latency_sec": 0.5632457437499928,
+  "mean_input_variance": 0.6819411963224411,
+  "per_class_f1": {
+    "N": 0.9068332444579874,
+    "SVEB": 0.0,
+    "VEB": 0.442743597291728,
+    "F": 0.0,
+    "Q": 0.7565064665495769
+  }
+}

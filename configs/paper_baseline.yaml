@@ -1,0 +1,48 @@
+# Paper Baseline Experiments Configuration
+experiment:
+  name: "aami_ecg_federated_baselines"
+  seed: 42
+  num_clients: 8
+  num_rounds: 10
+  alphas: [0.1, 0.5, 1.0]
+
+models:
+  kan:
+    type: "fastkan"
+    layers_hidden: [32, 16, 5]
+    grid_size: 5
+    spline_order: 3
+    grid_range: 1.0
+  mlp:
+    type: "mlp"
+    input_dim: 32
+    hidden_dims: [64, 48]     # Matched to KAN parameter budget (~5.4k parameters)
+    num_classes: 5
+    dropout: 0.1
+
+client:
+  local_epochs: 3
+  batch_size: 32
+  optimizer: "adam"
+  learning_rate: 0.001
+  weight_decay: 1.0e-4
+
+algorithms:
+  - name: "FedAvg-MLP"
+    model: "mlp"
+    strategy: "fedavg"
+    proximal_mu: 0.0
+  - name: "FedAvg-KAN"
+    model: "kan"
+    strategy: "fedavg"
+    proximal_mu: 0.0
+  - name: "FedProx-KAN"
+    model: "kan"
+    strategy: "fedprox"
+    proximal_mu: 0.01
+
+data:
+  processed_dir: "data/processed/beats"
+  partitions_dir: "data/partitions"
+
+output_dir: "results/baselines"

@@ -1,0 +1,18 @@
+# KAN (Kolmogorov-Arnold Network) Architecture Configuration
+model:
+  type: "fastkan"
+  input_dim: 32
+  layers_hidden: [32, 16, 5]  # [input, hidden, output]
+  grid_size: 5                # G in {3, 5, 7, 10}
+  spline_order: 3             # k in {2, 3, 4}
+  grid_range: 1.0             # B-spline evaluation interval [-1.0, 1.0]
+  use_base_update: true       # Linear base residual branch: w_b * silu(x)
+  use_bias: true
+  dropout: 0.0
+
+training:
+  optimizer: "adam"
+  learning_rate: 0.001
+  weight_decay: 1.0e-4
+  batch_size: 32
+  epochs: 5

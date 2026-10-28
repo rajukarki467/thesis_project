@@ -1,0 +1,27 @@
+# Federated Learning Configuration
+federated:
+  num_clients: 8
+  num_rounds: 10
+  fraction_fit: 1.0            # Client selection ratio per round (1.0 = all clients)
+  fraction_evaluate: 1.0
+  min_fit_clients: 8
+  min_evaluate_clients: 8
+  min_available_clients: 8
+  aggregation: "fedavg"        # 'fedavg' or 'fedprox'
+  proximal_mu: 0.01            # FedProx regularization parameter mu
+
+client:
+  local_epochs: 3
+  batch_size: 32
+  optimizer: "adam"            # 'adam' or 'sgd'
+  learning_rate: 0.001
+  momentum: 0.9                # For SGD
+  weight_decay: 1.0e-4
+  loss_fn: "cross_entropy"
+
+evaluation:
+  evaluate_on_test: true
+  metrics: ["accuracy", "macro_f1"]
+
+results:
+  output_dir: "results/baselines"

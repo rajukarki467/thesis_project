@@ -1,0 +1,373 @@
+"""
+Fast Kolmogorov-Arnold Network (FastKAN) Classifier for ECG Arrhythmia Classification.
+
+Features:
+- Modular KAN architecture mapping 32-sample ECG vectors to AAMI classes.
+- Edge layers with B-spline parameterization over G grid intervals and degree k.
+- Dynamically configurable (G, k) parameters with G in {3, 5, 7, 10} and k in {2, 3, 4}.
+- Accurate active parameter and coefficient counting via get_parameter_count().
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+SUPPORTED_GRID_SIZES = {3, 5, 7, 10}
+SUPPORTED_SPLINE_ORDERS = {2, 3, 4}
+
+
+class FastKANLayer(nn.Module):
+    """
+    A single edge layer of a Kolmogorov-Arnold Network using B-spline basis expansion.
+
+    Each input-output edge (i -> j) has an activation function:
+        phi_{j, i}(x_i) = w_b * silu(x_i) + sum_{m=0}^{G+k-1} c_{j, i, m} * B_m(x_i)
+
+    Parameters
+    ----------
+    in_features : int
+        Number of input dimensions.
+    out_features : int
+        Number of output dimensions.
+    grid_size : int
+        Number of grid intervals G in {3, 5, 7, 10}.
+    spline_order : int
+        Spline polynomial degree k in {2, 3, 4}.
+    grid_range : float
+        Interval boundary [-grid_range, grid_range] for B-spline evaluation (default 1.0).
+    use_base_update : bool
+        Whether to include the linear residual branch w_b * silu(x) (default True).
+    use_bias : bool
+        Whether to include an additive bias term (default True).
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        grid_size: int = 5,
+        spline_order: int = 3,
+        grid_range: float = 1.0,
+        use_base_update: bool = True,
+        use_bias: bool = True,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.grid_range = float(grid_range)
+        self.use_base_update = use_base_update
+        self.use_bias = use_bias
+
+        self._validate_gk(grid_size, spline_order)
+        self.grid_size = grid_size
+        self.spline_order = spline_order
+
+        # Initialize grid buffer
+        self._build_grid()
+
+        # Base linear branch parameters
+        if self.use_base_update:
+            self.base_weight = nn.Parameter(torch.empty(out_features, in_features))
+        else:
+            self.register_parameter("base_weight", None)
+
+        # Spline coefficients: (out_features, in_features, G + k)
+        num_bases = self.grid_size + self.spline_order
+        self.spline_weight = nn.Parameter(torch.empty(out_features, in_features, num_bases))
+
+        # Additive bias
+        if self.use_bias:
+            self.bias = nn.Parameter(torch.empty(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+        self.reset_parameters()
+
+    @staticmethod
+    def _validate_gk(grid_size: int, spline_order: int) -> None:
+        if grid_size not in SUPPORTED_GRID_SIZES:
+            raise ValueError(
+                f"grid_size (G) must be in {SUPPORTED_GRID_SIZES}, got {grid_size}."
+            )
+        if spline_order not in SUPPORTED_SPLINE_ORDERS:
+            raise ValueError(
+                f"spline_order (k) must be in {SUPPORTED_SPLINE_ORDERS}, got {spline_order}."
+            )
+
+    def _build_grid(self) -> None:
+        """Construct uniform B-spline knot vector including margin knots."""
+        h = (2.0 * self.grid_range) / self.grid_size
+        total_knots = self.grid_size + 2 * self.spline_order + 1
+        grid = torch.linspace(
+            -self.grid_range - self.spline_order * h,
+            self.grid_range + self.spline_order * h,
+            total_knots,
+            dtype=torch.float32,
+        )
+        self.register_buffer("grid", grid, persistent=False)
+
+    def reset_parameters(self) -> None:
+        """Initialize parameters with variance-scaled weights for stable training."""
+        if self.base_weight is not None:
+            nn.init.kaiming_uniform_(self.base_weight, a=math.sqrt(5) * 0.1)
+
+        # Initialize spline coefficients with small Gaussian noise
+        std = 1.0 / math.sqrt(self.in_features * (self.grid_size + self.spline_order))
+        nn.init.normal_(self.spline_weight, mean=0.0, std=std)
+
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
+
+    def compute_b_splines(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate degree-k B-spline basis functions using Cox-de Boor recursion.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_features).
+
+        Returns
+        -------
+        torch.Tensor
+            Evaluated basis tensor of shape (batch_size, in_features, G + k).
+        """
+        # Clamp inputs within the grid range for numerical stability
+        x_clamped = torch.clamp(x, -self.grid_range, self.grid_range).unsqueeze(-1)
+        grid = self.grid.to(dtype=x.dtype, device=x.device)
+
+        # 0-degree step functions
+        bases = ((x_clamped >= grid[:-1]) & (x_clamped < grid[1:])).to(x.dtype)
+
+        # Cox-de Boor recursive degree elevation
+        for p in range(1, self.spline_order + 1):
+            denom1 = grid[p:-1] - grid[:-(p + 1)]
+            denom2 = grid[p + 1:] - grid[1:-p]
+            bases = (
+                (x_clamped - grid[:-(p + 1)]) / denom1 * bases[:, :, :-1]
+                + (grid[p + 1:] - x_clamped) / denom2 * bases[:, :, 1:]
+            )
+
+        return bases
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass combining base activation and spline basis interpolation."""
+        batch_size = x.shape[0]
+
+        # 1. Base linear residual branch: w_b * silu(x)
+        if self.base_weight is not None:
+            base_out = F.linear(F.silu(x), self.base_weight)
+        else:
+            base_out = 0.0
+
+        # 2. Spline branch
+        bases = self.compute_b_splines(x)  # (batch_size, in_features, G + k)
+        spline_out = F.linear(
+            bases.contiguous().view(batch_size, -1),
+            self.spline_weight.contiguous().view(self.out_features, -1),
+        )
+
+        out = base_out + spline_out
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+    def update_grid(self, new_grid_size: int, new_spline_order: int) -> None:
+        """
+        Dynamically update (G, k) parameters of this layer.
+        Interpolates existing spline weights onto the new grid.
+        """
+        self._validate_gk(new_grid_size, new_spline_order)
+        if new_grid_size == self.grid_size and new_spline_order == self.spline_order:
+            return
+
+        old_num_bases = self.grid_size + self.spline_order
+        new_num_bases = new_grid_size + new_spline_order
+
+        self.grid_size = new_grid_size
+        self.spline_order = new_spline_order
+        self._build_grid()
+
+        # Resample spline weights along basis dimension (dim=2)
+        with torch.no_grad():
+            old_w = self.spline_weight.data  # (out_features, in_features, old_num_bases)
+            # Reshape for 1D linear interpolation: (out * in, 1, old_bases)
+            reshaped = old_w.view(-1, 1, old_num_bases)
+            new_w = F.interpolate(
+                reshaped, size=new_num_bases, mode="linear", align_corners=True
+            ).view(self.out_features, self.in_features, new_num_bases)
+
+            self.spline_weight = nn.Parameter(new_w)
+
+    def get_spline_parameter_count(self) -> int:
+        """Return active count of B-spline coefficients."""
+        return self.spline_weight.numel()
+
+    def get_parameter_count(self) -> int:
+        """Return total active trainable parameters in this layer."""
+        count = self.spline_weight.numel()
+        if self.base_weight is not None:
+            count += self.base_weight.numel()
+        if self.bias is not None:
+            count += self.bias.numel()
+        return count
+
+
+class FastKANClassifier(nn.Module):
+    """
+    Modular Kolmogorov-Arnold Network (KAN) for ECG Arrhythmia Heartbeat Classification.
+
+    Parameters
+    ----------
+    layers_hidden : Sequence[int]
+        Layer dimensions from input to output, e.g. [32, 16, 5].
+    grid_size : int or Sequence[int]
+        Number of grid intervals G in {3, 5, 7, 10} for each layer (default 5).
+    spline_order : int or Sequence[int]
+        Spline degree k in {2, 3, 4} for each layer (default 3).
+    grid_range : float
+        Grid domain boundary (default 1.0).
+    dropout : float
+        Dropout probability between layers (default 0.0).
+    use_base_update : bool
+        Whether to include base residual branch (default True).
+    use_bias : bool
+        Whether to include bias parameters (default True).
+    """
+
+    def __init__(
+        self,
+        layers_hidden: Sequence[int] = (32, 16, 5),
+        grid_size: Union[int, Sequence[int]] = 5,
+        spline_order: Union[int, Sequence[int]] = 3,
+        grid_range: float = 1.0,
+        dropout: float = 0.0,
+        use_base_update: bool = True,
+        use_bias: bool = True,
+    ):
+        super().__init__()
+        self.layers_hidden = list(layers_hidden)
+        self.grid_range = grid_range
+        num_layers = len(self.layers_hidden) - 1
+
+        if num_layers < 1:
+            raise ValueError("layers_hidden must have at least 2 dimensions (input and output).")
+
+        # Handle grid_size and spline_order per layer
+        if isinstance(grid_size, int):
+            self.grid_sizes = [grid_size] * num_layers
+        else:
+            self.grid_sizes = list(grid_size)
+            if len(self.grid_sizes) != num_layers:
+                raise ValueError(f"Expected {num_layers} grid sizes, got {len(self.grid_sizes)}.")
+
+        if isinstance(spline_order, int):
+            self.spline_orders = [spline_order] * num_layers
+        else:
+            self.spline_orders = list(spline_order)
+            if len(self.spline_orders) != num_layers:
+                raise ValueError(f"Expected {num_layers} spline orders, got {len(self.spline_orders)}.")
+
+        # Build KAN layers
+        self.layers = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
+
+        for i in range(num_layers):
+            in_dim = self.layers_hidden[i]
+            out_dim = self.layers_hidden[i + 1]
+            g = self.grid_sizes[i]
+            k = self.spline_orders[i]
+
+            layer = FastKANLayer(
+                in_features=in_dim,
+                out_features=out_dim,
+                grid_size=g,
+                spline_order=k,
+                grid_range=grid_range,
+                use_base_update=use_base_update,
+                use_bias=use_bias,
+            )
+            self.layers.append(layer)
+            self.dropouts.append(nn.Dropout(p=dropout) if dropout > 0 and i < num_layers - 1 else nn.Identity())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass over sequential KAN layers.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Batch of resampled ECG beats with shape (batch_size, 32).
+
+        Returns
+        -------
+        torch.Tensor
+            Logits of shape (batch_size, num_classes).
+        """
+        h = x
+        for layer, drop in zip(self.layers, self.dropouts):
+            h = layer(h)
+            h = drop(h)
+        return h
+
+    def set_layer_gk(self, layer_idx: int, grid_size: int, spline_order: int) -> None:
+        """
+        Dynamically update (G, k) parameters for a specific edge layer.
+
+        Parameters
+        ----------
+        layer_idx : int
+            Index of the layer (0 <= layer_idx < num_layers).
+        grid_size : int
+            New G in {3, 5, 7, 10}.
+        spline_order : int
+            New k in {2, 3, 4}.
+        """
+        if not 0 <= layer_idx < len(self.layers):
+            raise IndexError(f"layer_idx {layer_idx} out of range [0, {len(self.layers)}).")
+        self.layers[layer_idx].update_grid(grid_size, spline_order)
+        self.grid_sizes[layer_idx] = grid_size
+        self.spline_orders[layer_idx] = spline_order
+
+    def get_parameter_count(self, detailed: bool = False) -> Union[int, Dict[str, Any]]:
+        """
+        Calculate active coefficient and parameter counts.
+
+        Parameters
+        ----------
+        detailed : bool
+            If True, returns a breakdown dictionary; otherwise returns integer count.
+
+        Returns
+        -------
+        int or Dict[str, Any]
+            Active coefficient count.
+        """
+        total = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        spline_coeffs = sum(layer.get_spline_parameter_count() for layer in self.layers)
+        base_weights = total - spline_coeffs
+
+        if detailed:
+            layer_breakdown = []
+            for idx, layer in enumerate(self.layers):
+                layer_breakdown.append({
+                    "layer": idx,
+                    "in_features": layer.in_features,
+                    "out_features": layer.out_features,
+                    "grid_size": layer.grid_size,
+                    "spline_order": layer.spline_order,
+                    "spline_coefficients": layer.get_spline_parameter_count(),
+                    "total_layer_parameters": layer.get_parameter_count(),
+                })
+            return {
+                "total_parameters": total,
+                "spline_coefficients": spline_coeffs,
+                "base_parameters": base_weights,
+                "layers": layer_breakdown,
+            }
+        return total
