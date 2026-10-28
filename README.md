@@ -1,0 +1,257 @@
+# Resource-Adaptive Federated Learning for ECG Arrhythmia Classification
+
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.15%2Bcpu-EE4C2C.svg)](https://pytorch.org/)
+[![WFDB](https://img.shields.io/badge/WFDB-4.3.1-brightgreen.svg)](https://physionet.org/about/software/)
+[![Dataset](https://img.shields.io/badge/Dataset-MIT--BIH%20Arrhythmia-orange.svg)](https://physionet.org/content/mitdb/1.0.0/)
+[![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
+
+An end-to-end framework for biomedical signal preprocessing, patient-level evaluation splits, and Non-IID Dirichlet federated data simulation for ECG heartbeat classification on the **MIT-BIH Arrhythmia Database**, following the **ANSI/AAMI EC57** international standard.
+
+---
+
+## Table of Contents
+1. [Overview](#overview)
+2. [Project Architecture](#project-architecture)
+3. [ECG Preprocessing Pipeline](#ecg-preprocessing-pipeline)
+   - [Zero-Phase Butterworth Bandpass Filtering](#1-zero-phase-butterworth-bandpass-filtering)
+   - [R-Peak Detection & Segmentation](#2-r-peak-detection--segmentation)
+   - [Z-Score Normalization](#3-z-score-normalization)
+   - [Linear Interpolation Resampling](#4-linear-interpolation-resampling)
+   - [AAMI Heartbeat Categorization](#5-aami-heartbeat-categorization)
+   - [Inter-Patient Split Paradigm](#6-inter-patient-split-paradigm)
+4. [Federated Non-IID Partitioning](#federated-non-iid-partitioning)
+5. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
+6. [Installation & Setup](#installation--setup)
+7. [CLI Usage](#cli-usage)
+8. [Dataset Summary & Statistics](#dataset-summary--statistics)
+9. [References](#references)
+
+---
+
+## Overview
+
+Heartbeat classification across distributed medical devices (e.g., edge monitors, wearable smartwatches, and clinical bedside telemetry) requires privacy-preserving federated machine learning. However, real-world clinical data exhibits severe **patient heterogeneity** and **class imbalance**. 
+
+This repository provides:
+- **Biomedical Signal Processing**: Zero-phase filtering, artifact removal, robust R-peak detection, and dimension downsampling to $n=32$ features.
+- **Strict Inter-Patient Paradigm**: Patient-level data splitting (splitting by recording IDs) to prevent patient data leakage between train, validation, and test splits.
+- **Federated Simulation**: Class-conditional Dirichlet non-IID partitioning for $N$ clients across varying heterogeneity levels ($\alpha \in [0.1, 0.5, 1.0]$).
+- **Fully Deterministic & Configurable**: Controlled via YAML configs and global seeding.
+
+---
+
+## Project Architecture
+
+```
+thesis_project/
+├── configs/
+│   ├── dataset.yaml                # Master dataset, filter, split, & partition configuration
+│   ├── fl.yaml                     # Federated learning hyperparameters
+│   ├── kan.yaml                    # Kolmogorov-Arnold Network model configuration
+│   └── ppo.yaml                    # Reinforcement learning controller configuration
+├── data/
+│   ├── raw/
+│   │   └── mit-bih-arrhythmia-database-1.0.0/  # Raw WFDB recordings (.dat, .hea, .atr)
+│   ├── processed/
+│   │   ├── beats/                  # Extracted .npy heartbeat arrays (X, y, record_ids)
+│   │   └── metadata/               # Patient splits, class distributions, partition tables
+│   └── partitions/                 # Client index allocations per Dirichlet alpha
+├── notebooks/
+│   ├── 01_dataset_exploration.ipynb
+│   ├── 02_preprocessing_validation.ipynb
+│   └── 03_partition_analysis.ipynb
+├── results/
+│   └── figures/
+│       └── eda/                    # Intermediate verification & diagnostic plots
+├── src/
+│   ├── preprocessing.py            # Complete ECG filtering, windowing, & split pipeline
+│   ├── partition.py                # Dirichlet federated partitioning module
+│   ├── dataset.py                  # WFDB record & annotation I/O helpers
+│   ├── splits.py                   # Patient-level record splitting
+│   ├── visualization.py            # High-resolution clinical ECG plotting routines
+│   ├── models/                     # Classification architectures (MLP, KAN, FastKAN)
+│   ├── federated/                  # Federated learning clients, servers, and aggregators
+│   └── utils/
+│       ├── reproducibility.py      # Deterministic seed controls (Python, NumPy, Torch)
+│       └── splits.py
+├── requirements.txt
+├── .gitignore
+└── README.md
+```
+
+---
+
+## ECG Preprocessing Pipeline
+
+The preprocessing pipeline in [`src/preprocessing.py`](src/preprocessing.py) converts continuous multi-channel ECG telemetry into standardized, feature-resampled heartbeat vectors.
+
+```mermaid
+flowchart TD
+    A["Raw ECG (.dat, .hea, .atr)"] --> B["Butterworth Bandpass (0.5 - 40 Hz, Order 3)"]
+    B --> C["R-Peak Detection & Alignment"]
+    C --> D["Fixed-Window Beat Extraction (360 samples = 1.0 s)"]
+    D --> E["Z-Score Normalization: z = (x - μ) / σ"]
+    E --> F["Linear Interpolation Resampling (n = 32 features)"]
+    F --> G["AAMI Class Grouping (N, SVEB, VEB, F, Q)"]
+    G --> H["Inter-Patient Split (Train / Val / Test by Record ID)"]
+```
+
+### 1. Zero-Phase Butterworth Bandpass Filtering
+Eliminates respiration-induced baseline wander ($< 0.5\text{ Hz}$) and high-frequency electromyographic (EMG) or powerline noise ($> 40\text{ Hz}$):
+- **Filter order**: $3$ (effective order 6 bidirectional)
+- **Cutoffs**: $f_{\text{low}} = 0.5\text{ Hz}$, $f_{\text{high}} = 40.0\text{ Hz}$ ($f_s = 360\text{ Hz}$)
+- **Implementation**: Second-order sections (`sosfiltfilt`) for guaranteed numerical stability and zero phase distortion.
+
+### 2. R-Peak Detection & Segmentation
+- Extracts a **360-sample window** ($1.0\text{ second}$ duration at $360\text{ Hz}$) centered at the R-peak:
+  $$\text{Window} = [r - 180, \; r + 180)$$
+- Boundary beats that truncate before $0$ or beyond signal duration are automatically discarded.
+
+### 3. Z-Score Normalization
+Each individual beat segment $x$ is normalized to zero mean and unit variance:
+$$z = \frac{x - \mu}{\sigma + \epsilon}$$
+where $\epsilon = 10^{-8}$ prevents numerical instability for constant or low-amplitude signals.
+
+### 4. Linear Interpolation Resampling
+Each 360-sample beat is resampled to a compact representation of $n = 32$ features via continuous linear interpolation:
+$$x_{\text{resampled}} = \mathcal{I}_{\text{linear}}(x_{\text{normalized}}, \; n=32)$$
+Supports both vectorized `scipy.interpolate.interp1d` and batch-accelerated `torch.nn.functional.interpolate`.
+
+### 5. AAMI Heartbeat Categorization
+Annotations from `.atr` files are mapped into the five standard ANSI/AAMI EC57 heartbeat classes. Non-heartbeat annotations (rhythm changes, comments, noise artifacts) are excluded.
+
+| AAMI Class | Description | MIT-BIH Symbols Included | Total Beats |
+| :---: | :--- | :--- | :---: |
+| **N** | Normal / Bundle Branch Block | `N`, `L`, `R`, `e`, `j`, `B` | 90,582 |
+| **SVEB** | Supraventricular Ectopic Beat | `A`, `a`, `J`, `S` | 2,781 |
+| **VEB** | Ventricular Ectopic Beat | `V`, `E`, `r` | 7,235 |
+| **F** | Fusion of Ventricular & Normal | `F` | 802 |
+| **Q** | Paced / Unclassifiable Beat | `/`, `f`, `Q` | 8,038 |
+| **Total** | | | **109,438** |
+
+### 6. Inter-Patient Split Paradigm
+To avoid intra-patient data leakage (optimistic bias where beats from the same patient appear in both training and test sets), data is partitioned **strictly by recording IDs**:
+- **Train Set (70%)**: 33 patients ($75,795$ beats)
+- **Validation Set (15%)**: 7 patients ($15,468$ beats)
+- **Test Set (15%)**: 8 patients ($18,175$ beats)
+- Zero patient overlap is enforced: $\mathcal{P}_{\text{train}} \cap \mathcal{P}_{\text{val}} = \emptyset$, $\mathcal{P}_{\text{train}} \cap \mathcal{P}_{\text{test}} = \emptyset$, $\mathcal{P}_{\text{val}} \cap \mathcal{P}_{\text{test}} = \emptyset$.
+
+---
+
+## Federated Non-IID Partitioning
+
+Federated simulation is implemented in [`src/partition.py`](src/partition.py). To realistically reflect heterogeneity across clinical edge nodes, training sample indices are partitioned among $N = 8$ clients using a class-conditional **Dirichlet distribution**:
+
+$$\mathbf{p}_c \sim \text{Dirichlet}(\alpha \cdot \mathbf{1}_N) \quad \text{for each class } c \in \{N, \text{SVEB}, \text{VEB}, F, Q\}$$
+
+Where $\mathbf{p}_c = [p_{c, 0}, p_{c, 1}, \dots, p_{c, N-1}]$ specifies the fraction of class $c$ samples allocated to client $i$.
+
+- **$\alpha = 0.1$ (Extreme Non-IID)**: High statistical heterogeneity; individual clients specialize heavily in one or two classes while missing others.
+- **$\alpha = 0.5$ (Moderate Non-IID)**: Substantial class distribution skew with partial coverage across all classes.
+- **$\alpha = 1.0$ (Uniform Dirichlet)**: Smoother class distribution approaching IID characteristics.
+
+Partition indices are serialized to:
+- `data/partitions/clients_8_alpha_{alpha}/client_{id}.npy`
+- `data/alpha_{alpha}/client_{id}.npy`
+
+---
+
+## Verification & Exploratory Data Analysis (EDA)
+
+All intermediate verification plots are generated deterministically and saved in [`results/figures/eda/`](results/figures/eda/):
+
+| Verification Figure | Description |
+| :--- | :--- |
+| `raw_vs_filtered_ecg.png` | Demonstrates elimination of baseline wander and high-frequency noise using the 3rd-order Butterworth bandpass filter. |
+| `r_peak_detection.png` | Displays detected R-peaks and ground-truth AAMI annotations on the filtered ECG trace. |
+| `aami_class_examples.png` | Multi-panel comparison of representative beats for all 5 AAMI classes, comparing 360-sample windows against $n=32$ linearly resampled features. |
+| `patient_split_distribution.png` | Log-scale class distribution across Train, Validation, and Test patient splits. |
+| `dirichlet_alphas_comparison.png` | Side-by-side heatmaps illustrating client-class proportions across $\alpha \in \{0.1, 0.5, 1.0\}$. |
+| `dirichlet_heatmap_alpha_*.png` | Detailed client label distribution heatmaps for each individual $\alpha$. |
+| `client_sample_counts_alpha_*.png`| Total number of samples allocated to each federated client per alpha. |
+
+---
+
+## Installation & Setup
+
+### Prerequisites
+- Linux / WSL2 (Ubuntu 22.04+)
+- Python 3.12+
+
+### Environment Setup
+```bash
+# Clone the repository
+git clone https://github.com/rajukarki467/thesis_project.git
+cd thesis_project
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
+
+## CLI Usage
+
+Both pipelines are executable via command-line interfaces that parse parameters from [`configs/dataset.yaml`](configs/dataset.yaml) and support deterministic seeding.
+
+### 1. Execute Preprocessing Pipeline
+Processes all 48 MIT-BIH recordings, performs filtering, extracts beats, applies normalization and $n=32$ resampling, enforces patient splits, and saves verification figures:
+```bash
+.venv/bin/python src/preprocessing.py --config configs/dataset.yaml --seed 42
+```
+*Optional CLI overrides:*
+```bash
+.venv/bin/python src/preprocessing.py --config configs/dataset.yaml --resample_method torch --seed 123
+```
+
+### 2. Execute Federated Partitioning Pipeline
+Partitions the training split among simulated federated clients for $\alpha \in [0.1, 0.5, 1.0]$:
+```bash
+.venv/bin/python src/partition.py --config configs/dataset.yaml --alphas 0.1 0.5 1.0 --num_clients 8 --seed 42
+```
+
+---
+
+## Dataset Summary & Statistics
+
+Following pipeline execution with global seed `42`:
+
+```
+Patient-Level Split: 33 Train Records, 7 Validation Records, 8 Test Records
+Total Valid Beats Extracted: 109,438 (Resampled to n=32 features)
+
+Split Breakdown:
+├── Train Set: 75,795 beats
+│   ├── N:    63,349 (83.58%)
+│   ├── SVEB:  2,651  (3.50%)
+│   ├── VEB:   5,226  (6.89%)
+│   ├── F:       417  (0.55%)
+│   └── Q:     4,152  (5.48%)
+├── Validation Set: 15,468 beats
+│   ├── N:    14,653 (94.73%)
+│   ├── SVEB:     76  (0.49%)
+│   ├── VEB:     733  (4.74%)
+│   ├── F:         6  (0.04%)
+│   └── Q:         0  (0.00%)
+└── Test Set: 18,175 beats
+    ├── N:    12,580 (69.22%)
+    ├── SVEB:     54  (0.30%)
+    ├── VEB:   1,276  (7.02%)
+    ├── F:       379  (2.09%)
+    └── Q:     3,886 (21.38%)
+```
+
+---
+
+## References
+
+1. **MIT-BIH Database**: Goldberger, A. L., et al. "PhysioBank, PhysioToolkit, and PhysioNet: Components of a new research resource for complex physiologic signals." *Circulation*, 101(23), e215-e220 (2000).
+2. **AAMI Standard**: Association for the Advancement of Medical Instrumentation. "Testing and reporting performance results of cardiac rhythm and ST-segment measurement algorithms." *ANSI/AAMI EC57:1998* (Arlington, VA, 1998).
+3. **Inter-Patient Paradigm**: de Chazal, P., O'Dwyer, M., & Reilly, R. B. "A patient-adapting heartbeat classification system using ECG morphology and rhythm features." *IEEE Transactions on Biomedical Engineering*, 51(7), 1196-1206 (2004).
+4. **Federated Dirichlet Non-IID**: Hsu, T. M. H., Venkataraman, H., & Qi, Z. "Measuring the Effects of Non-Identical Distributions in Federated Learning." *arXiv preprint arXiv:1909.06320* (2019).

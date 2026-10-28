@@ -112,10 +112,12 @@ data/alpha_1.0/*
 *.onnx
 *.safetensors
 
-checkpoints/
-models/
-saved_models/
-model_checkpoints/
+# Model Checkpoints (anchor to root to avoid ignoring src/models/)
+/checkpoints/
+/models/
+/saved_models/
+/model_checkpoints/
+!src/models/
 
 # ============================================================
 # RL / PPO / STABLE-BASELINES3

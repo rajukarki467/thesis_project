@@ -1,28 +1,55 @@
-"""
-for example : 
+# Configuration for MIT-BIH ECG Preprocessing and Federated Partitioning
+
 seed: 42
 
 dataset:
-  name: mitdb
+  name: "mit-bih"
+  raw_dir: "data/raw/mit-bih-arrhythmia-database-1.0.0"
+  processed_dir: "data/processed"
   sampling_frequency: 360
+  channel: 0  # 0 for primary lead (MLII in majority of records, V5 in paced)
 
 preprocessing:
-  bandpass_low: 0.5
-  bandpass_high: 40.0
+  filter:
+    order: 3
+    lowcut: 0.5
+    highcut: 40.0
+  window:
+    window_size: 360     # 1.0 second duration (360 samples at 360 Hz)
+    pre_r_samples: 180   # Centered around R-peak (180 before, 180 after)
+  normalization:
+    method: "z-score"
+    epsilon: 1e-8
+  resampling:
+    target_features: 32  # n=32 features per beat
+    method: "scipy"      # Linear interpolation: 'scipy' or 'torch'
+  aami:
+    classes: ["N", "SVEB", "VEB", "F", "Q"]
+    mapping:
+      # N: Normal and bundle branch block beats
+      N: ["N", "L", "R", "e", "j", "B"]
+      # SVEB: Supraventricular ectopic beats
+      SVEB: ["A", "a", "J", "S"]
+      # VEB: Ventricular ectopic beats
+      VEB: ["V", "E", "r"]
+      # F: Fusion beats
+      F: ["F"]
+      # Q: Paced and unclassifiable beats
+      Q: ["/", "f", "Q"]
 
-model:
-  type: kan
+split:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  enforce_patient_split: true  # Strict record-level split without patient overlap
 
-training:
-  epochs: 20
-  batch_size: 32
-  learning_rate: 0.001
-
-federated:
+partition:
   num_clients: 8
-  aggregation: fedavg
+  alphas: [0.1, 0.5, 1.0]
+  min_samples_per_client: 10
+  split_to_partition: "train"  # 'train' or 'all'
+  partitions_dir: "data/partitions"
+  metadata_dir: "data/processed/metadata"
 
-results:
-  output_dir: results/baselines
-
-"""
+figures:
+  eda_dir: "results/figures/eda"
