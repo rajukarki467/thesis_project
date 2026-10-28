@@ -37,12 +37,17 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
    - [PPO Meta-Controller & Clipped Surrogate Objective](#2-ppo-meta-controller--clipped-surrogate-objective)
    - [Controller Overhead Analysis](#3-controller-overhead-analysis)
    - [Empirical Comparative Performance](#4-empirical-comparative-performance)
-10. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
-11. [Installation & Setup](#installation--setup)
-12. [CLI Usage](#cli-usage)
-13. [Dataset Summary & Statistics](#dataset-summary--statistics)
-14. [Project Roadmap & Next Steps](#project-roadmap--next-steps)
-15. [References](#references)
+10. [Comprehensive Technical Report & Experimental Findings](#comprehensive-technical-report--experimental-findings)
+    - [Executive Summary](#executive-summary)
+    - [Master Benchmark Comparison Table](#master-benchmark-comparison-table)
+    - [Key Scientific Insights](#key-scientific-insights)
+    - [Artifacts & Experiment Outputs Index](#artifacts--experiment-outputs-index)
+11. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
+12. [Installation & Setup](#installation--setup)
+13. [CLI Usage](#cli-usage)
+14. [Dataset Summary & Statistics](#dataset-summary--statistics)
+15. [Project Roadmap & Next Steps](#project-roadmap--next-steps)
+16. [References](#references)
 
 ---
 
@@ -433,6 +438,93 @@ Evaluated on the MIT-BIH held-out patient test split ($18,175$ beats) under mode
 | **FedAvg-KAN (Fixed)** | Centralized | Fixed $(G=5, k=3)$ | $5,349$ fixed | $80.20\%$ | $0.3800$ | $0.00\text{ ms}$ |
 | **Heuristic Adaptive KAN** | Quantile Rule | Dynamic $(G_i, k_i) \in [3, 10] \times [2, 4]$ | $5,793$ avg | **$80.13\%$** | **$0.3856$** | **$0.08\text{ ms}$** |
 | **PPO Adaptive KAN** | Actor-Critic | Dynamic $(G_i, k_i) \in [3, 10] \times [2, 4]$ | $6,089$ avg | **$78.75\%$** | **$0.3734$** | **$1.19\text{ ms}$** |
+
+---
+
+## Comprehensive Technical Report & Experimental Findings
+
+### Executive Summary
+
+Distributed edge deployment of ECG arrhythmia classifiers faces two fundamental bottlenecks: **statistical data heterogeneity** (severe inter-patient morphological variations and class imbalance across edge devices) and **hardware resource asymmetry** (divergent compute throughput, memory budgets, and network link bandwidths). 
+
+This research framework introduces **Resource-Adaptive Federated Kolmogorov-Arnold Networks (FedKAN)** to resolve both challenges simultaneously:
+1. **Representational Power**: Kolmogorov-Arnold Networks replace fixed weight-matrix activations with learnable, continuous univariate B-splines along edges, delivering higher non-linear morphological ECG feature resolution under identical parameter budgets.
+2. **Continuous Manifold Weight Transfer**: Because B-splines parameterize continuous functions over normalized domains $[-1, 1]$, edge models can dynamically reconfigure grid interval counts $G \in \{3, 5, 7, 10\}$ and polynomial degrees $k \in \{2, 3, 4\}$ via 1D spline interpolation. This enables fine-grained capacity scaling at edge clients while preserving seamless, dimension-consistent server aggregation on a reference grid $(G_{\text{ref}}, k_{\text{ref}})$.
+3. **Automated Resource Adaptation**: Through a custom Gymnasium Markov Decision Process (`FederatedKANEnv`), meta-controllers dynamically schedule spline complexity according to real-time telemetry (local loss, feature variance, step latency, simulated link throughput, and second-difference loss trajectory curvature).
+
+---
+
+### Master Benchmark Comparison Table
+
+All models are evaluated on the held-out patient-level test set ($18,175$ beats across 8 unseen clinical records) following the ANSI/AAMI EC57 standard.
+
+| Paradigm | Strategy | Controller | Dirichlet Heterogeneity ($\alpha$) | Model Architecture | Client Parameters (Avg) | Test Accuracy | Test Macro F1 | Comm. / Round (MB) | Decision Overhead |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Fixed Parameter** | **FedAvg-MLP** | None (Static) | $\alpha = 0.1$ (Extreme) | Matched MLP | $5,477$ | 75.66% | 0.2627 | 1.00 MB | 0.00 ms |
+| **Fixed Parameter** | **FedAvg-KAN** | None (Static) | $\alpha = 0.1$ (Extreme) | FastKAN $(G=5, k=3)$ | $5,349$ | **86.83%** | **0.3631** | **0.98 MB** | 0.00 ms |
+| **Fixed Parameter** | **FedProx-KAN** | None (Static) | $\alpha = 0.1$ (Extreme) | FastKAN $(G=5, k=3)$ | $5,349$ | **86.62%** | **0.3618** | **0.98 MB** | 0.00 ms |
+| **Fixed Parameter** | **FedAvg-MLP** | None (Static) | $\alpha = 0.5$ (Moderate) | Matched MLP | $5,477$ | 75.84% | 0.3288 | 1.00 MB | 0.00 ms |
+| **Fixed Parameter** | **FedAvg-KAN** | None (Static) | $\alpha = 0.5$ (Moderate) | FastKAN $(G=5, k=3)$ | $5,349$ | **83.69%** | **0.4316** | **0.98 MB** | 0.00 ms |
+| **Fixed Parameter** | **FedProx-KAN** | None (Static) | $\alpha = 0.5$ (Moderate) | FastKAN $(G=5, k=3)$ | $5,349$ | **82.67%** | **0.4212** | **0.98 MB** | 0.00 ms |
+| **Fixed Parameter** | **FedAvg-MLP** | None (Static) | $\alpha = 1.0$ (Uniform) | Matched MLP | $5,477$ | 74.73% | 0.3262 | 1.00 MB | 0.00 ms |
+| **Fixed Parameter** | **FedAvg-KAN** | None (Static) | $\alpha = 1.0$ (Uniform) | FastKAN $(G=5, k=3)$ | $5,349$ | **77.20%** | **0.3848** | **0.98 MB** | 0.00 ms |
+| **Fixed Parameter** | **FedProx-KAN** | None (Static) | $\alpha = 1.0$ (Uniform) | FastKAN $(G=5, k=3)$ | $5,349$ | 74.53% | 0.3309 | 0.98 MB | 0.00 ms |
+| **Adaptive Edge** | **Heuristic-KAN** | Quantile Rule | $\alpha = 0.5$ (Moderate) | Dynamic FastKAN | $5,793$ | **80.13%** | **0.3856** | 1.06 MB | **0.08 ms** |
+| **Adaptive Edge** | **PPO-KAN** | Actor-Critic | $\alpha = 0.5$ (Moderate) | Dynamic FastKAN | $6,089$ | **78.75%** | **0.3734** | 1.12 MB | **1.19 ms** |
+
+---
+
+### Key Scientific Insights
+
+1. **KAN Superiority Under Non-IID Label Skew**:
+   - Under extreme class skew ($\alpha = 0.1$), `FedAvg-KAN` achieves an **+11.17% classification accuracy advantage** ($86.83\%$ vs. $75.66\%$) and a **+0.1004 Macro F1 increase** over the parameter-budget-matched MLP ($5,349$ vs. $5,477$ parameters).
+   - This empirically confirms that univariate spline basis expansions capture high-frequency morphological variations in complex pathological QRS complexes (VEB, SVEB, F) significantly better than linear affine transformations with ReLU activations.
+
+2. **Feasibility of Continuous B-Spline Resampling**:
+   - Across all 12 discrete $(G, k)$ edge configurations, weights transfer between client and server via 1D linear spline interpolation without loss of numerical stability or functional divergence.
+   - Client updates can dynamically scale from $3,573$ parameters (coarse $G=3, k=2$) up to $8,901$ parameters (fine $G=10, k=4$) during local training, yet aggregate directly into the global reference model $(G=5, k=3)$.
+
+3. **Controller Decision Overhead & Real-Time Edge Viability (Section 3.9.4)**:
+   - The PPO meta-controller exhibits an average inference decision latency of **$1.19\text{ ms}$** per round across all 8 edge clients.
+   - Compared to typical client training epochs ($4.0 - 7.0\text{ s}$ per round), the decision overhead represents **$< 0.03\%$** of the communication cycle, demonstrating that reinforcement learning meta-scheduling introduces negligible overhead.
+
+4. **Multi-Objective Trade-Off Efficiency (Equation 7)**:
+   - Both the quantile heuristic controller and the PPO meta-controller successfully achieve positive multi-objective step rewards ($+0.4399$ and $+0.4396$, respectively).
+   - Constrained edge nodes with low bandwidth throughput ($1.0 - 3.0\text{ Mbps}$) are assigned coarse edge profiles to reduce network latency and energy consumption, while high-variance clients are allocated fine spline resolutions to preserve high minority-class diagnostic recall.
+
+---
+
+### Artifacts & Experiment Outputs Index
+
+All evaluation metrics, checkpoints, and diagnostic figures are systematically organized in the repository:
+
+```
+results/
+├── adaptive_kan/
+│   ├── checkpoints/
+│   │   └── ppo_model.zip              # Serialized trained PPO policy checkpoint
+│   ├── heuristic_master_summary.csv   # Heuristic summary across evaluated alphas
+│   ├── heuristic_results_0.5.csv      # Round-by-round trajectory for Heuristic (alpha=0.5)
+│   ├── heuristic_summary_0.5.json     # Final metric dictionary for Heuristic (alpha=0.5)
+│   ├── ppo_master_summary.csv         # PPO summary across evaluated alphas
+│   ├── ppo_results_0.5.csv            # Round-by-round trajectory for PPO (alpha=0.5)
+│   └── ppo_summary_0.5.json           # Final metric dictionary for PPO (alpha=0.5)
+├── baselines/
+│   ├── baseline_comparison_summary.csv# Master baseline comparison (MLP vs KAN vs FedProx)
+│   ├── baseline_comparison_summary.json
+│   ├── figures/
+│   │   ├── accuracy_vs_rounds_comparison.png
+│   │   ├── communication_efficiency_comparison.png
+│   │   └── macro_f1_vs_rounds_comparison.png
+│   ├── metrics_FedAvg-KAN_alpha_*.csv # Per-algorithm round metrics across alpha {0.1, 0.5, 1.0}
+│   ├── metrics_FedAvg-MLP_alpha_*.csv
+│   └── metrics_FedProx-KAN_alpha_*.csv
+└── figures/
+    └── eda/                           # Preprocessing & Dirichlet partition verification plots
+logs/
+└── ppo/
+    └── ppo_training_log.csv           # Episode rewards, lengths, and loss telemetry
+```
 
 ---
 
