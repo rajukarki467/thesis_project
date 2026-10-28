@@ -1,0 +1,75 @@
+# ==============================================================================
+# PPO Reinforcement Learning Configuration for Resource-Adaptive Federated KAN
+# Reference: Section 3.2.4 & Section 3.2.5 of the Thesis Proposal
+# ==============================================================================
+
+# Telemetry State Configuration: S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, κ^i]
+telemetry:
+  num_features: 5
+  feature_names:
+    - "local_loss"        # L_local: Cross-entropy loss on local client training batch
+    - "input_variance"    # Var(x): Empirical input feature variance across ECG samples
+    - "latency"           # Δτ: Wall-clock duration of local training step (seconds)
+    - "bandwidth"         # bw: Simulated network link throughput (Mbps)
+    - "curvature"         # κ: Second-difference loss trajectory curvature |L_t - 2*L_{t-1} + L_{t-2}|
+  normalization:
+    loss_max: 5.0         # Normalization divisor for local loss: [0.0, 5.0] -> [0.0, 1.0]
+    variance_max: 2.0     # Normalization divisor for feature variance: [0.0, 2.0] -> [0.0, 1.0]
+    latency_max: 10.0     # Normalization divisor for step latency (seconds): [0.0, 10.0] -> [0.0, 1.0]
+    bandwidth_min: 1.0    # Min bandwidth (Mbps): [1.0, 10.0] -> [0.0, 1.0]
+    bandwidth_max: 10.0   # Max bandwidth (Mbps)
+    curvature_max: 2.0    # Normalization divisor for loss curvature: [0.0, 2.0] -> [0.0, 1.0]
+  bandwidth_simulation:
+    distribution: "uniform"   # "uniform" or "lognormal"
+    min_mbps: 1.0
+    max_mbps: 10.0
+    lognormal_mu: 1.6         # Median ~5.0 Mbps
+    lognormal_sigma: 0.5
+
+# Discrete Action Space: a_i^t = (G_i^t, k_i^t) in {3, 5, 7, 10} x {2, 3, 4}
+actions:
+  grid_sizes: [3, 5, 7, 10]    # Spline interval resolution G
+  spline_orders: [2, 3, 4]     # Spline polynomial degree k
+  num_actions_per_client: 12   # 4 x 3 = 12 discrete configurations
+
+# Multi-Objective Reward: R_t = ΔAcc_global - λ1 * Σ Params(G_i^t, k_i^t) - λ2 * Σ Δτ_i^t (Eq. 7)
+reward:
+  accuracy_metric: "accuracy"  # "accuracy" or "macro_f1"
+  lambda1: 1.0e-6              # Scaling penalty for total active parameters (~40k params -> ~0.04 penalty)
+  lambda2: 0.005               # Scaling penalty for total client latency (~2.0s -> ~0.01 penalty)
+  delta_clip: 0.5              # Clip delta accuracy to [-delta_clip, delta_clip] for stability
+
+# Gymnasium Environment Hyperparameters
+environment:
+  num_clients: 8               # N participating federated clients
+  max_rounds: 10               # Maximum communication rounds per episode
+  reference_grid_size: 5       # Server reference grid size G_ref
+  reference_spline_order: 3    # Server reference spline degree k_ref
+  reference_hidden: [32, 16, 5]# Input dim 32, hidden 16, 5 AAMI output classes
+  alpha: 0.5                   # Non-IID Dirichlet skew for client data partitioning
+  seed: 42
+
+# Federated Client Training Setup within Environment
+federated:
+  local_epochs: 1              # Local epochs per round for fast RL training step
+  batch_size: 32
+  optimizer: "adam"
+  learning_rate: 0.001
+  weight_decay: 1.0e-4
+  aggregation: "fedavg"
+  proximal_mu: 0.0
+
+# Proximal Policy Optimization (PPO) Hyperparameters
+ppo:
+  learning_rate: 3.0e-4
+  gamma: 0.99                  # Discount factor γ
+  gae_lambda: 0.95             # Generalized Advantage Estimation λ
+  clip_range: 0.2              # PPO surrogate objective clip parameter ε
+  clip_range_vf: null
+  ent_coef: 0.01               # Entropy regularization coefficient
+  vf_coef: 0.5                 # Value function loss coefficient
+  max_grad_norm: 0.5           # Gradient norm clipping
+  total_timesteps: 20000
+  n_steps: 128
+  batch_size: 32
+  n_epochs: 10

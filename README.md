@@ -25,12 +25,16 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
 6. [Flower (flwr) Federated Integration](#flower-flwr-federated-integration)
 7. [Baseline Experiments & Empirical Results](#baseline-experiments--empirical-results)
    - [Diagnostic Visualizations](#diagnostic-visualizations)
-8. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
-9. [Installation & Setup](#installation--setup)
-10. [CLI Usage](#cli-usage)
-11. [Dataset Summary & Statistics](#dataset-summary--statistics)
-12. [Project Roadmap & Next Steps](#project-roadmap--next-steps)
-13. [References](#references)
+8. [Reinforcement Learning Gymnasium Environment](#reinforcement-learning-gymnasium-environment)
+   - [State Space & Telemetry Vector](#1-state-space--telemetry-vector)
+   - [Action Space & Dynamic Spline Interpolation](#2-action-space--dynamic-spline-interpolation)
+   - [Multi-Objective Reward Function (Equation 7)](#3-multi-objective-reward-function-equation-7)
+9. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
+10. [Installation & Setup](#installation--setup)
+11. [CLI Usage](#cli-usage)
+12. [Dataset Summary & Statistics](#dataset-summary--statistics)
+13. [Project Roadmap & Next Steps](#project-roadmap--next-steps)
+14. [References](#references)
 
 ---
 
@@ -80,6 +84,10 @@ thesis_project/
 │   ├── dataset.py                  # WFDB record & annotation I/O helpers
 │   ├── splits.py                   # Patient-level record splitting
 │   ├── visualization.py            # High-resolution clinical ECG plotting routines
+│   ├── environment/                # Gymnasium RL environments & telemetry trackers
+│   │   ├── f1_env.py               # FederatedKANEnv (Gymnasium.Env) MDP implementation
+│   │   ├── fl_env.py               # FederatedKANEnv aliases & exports
+│   │   └── telemetry.py            # Client & server 5-dim state telemetry tracker
 │   ├── models/                     # Classification architectures (MLP, FastKAN)
 │   │   ├── fastkan_model.py        # Modular FastKAN with dynamic (G, k) parameterization
 │   │   ├── mlp.py                  # Parameter-matched MLP baseline
@@ -93,6 +101,8 @@ thesis_project/
 │       ├── metrics.py              # AAMI classification metrics (Macro F1, Accuracy)
 │       ├── reproducibility.py      # Deterministic seed controls (Python, NumPy, Torch)
 │       └── splits.py
+├── tests/
+│   └── test_environment.py        # Comprehensive test suite for telemetry & Gym environment
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -248,6 +258,60 @@ All baseline comparison plots are stored in [`results/baselines/figures/`](resul
 
 ---
 
+## Reinforcement Learning Gymnasium Environment
+
+Implemented in [`src/environment/f1_env.py`](src/environment/f1_env.py) and [`src/environment/telemetry.py`](src/environment/telemetry.py), the `FederatedKANEnv` subclasses `gymnasium.Env` to formulate resource-adaptive federated learning as a multi-client Markov Decision Process (MDP) following **Section 3.2.4 & Section 3.2.5** of the thesis proposal.
+
+```mermaid
+flowchart LR
+    subgraph Centralized Server
+        RL["PPO Meta-Controller"]
+        Agg["Weighted FedAvg (G_ref, k_ref)"]
+        Eval["Held-Out Test Evaluator"]
+    end
+    subgraph Edge Clients
+        C1["Client 1: (G_1, k_1)"]
+        C2["Client 2: (G_2, k_2)"]
+        CN["Client N: (G_N, k_N)"]
+    end
+    RL -- "Actions a_t = (G_i, k_i)" --> Edge Clients
+    Edge Clients -- "B-spline Resampled Weights" --> Agg
+    Agg -- "Global Model θ_t+1" --> Eval
+    Eval -- "ΔAcc_global" --> RL
+    Edge Clients -- "Telemetry S_i^t (Loss, Var, Latency, bw, κ)" --> RL
+```
+
+### 1. State Space & Telemetry Vector
+For each client $i \in \{0, \dots, N-1\}$ at communication round $t$, the client and server track a 5-dimensional telemetry state vector:
+$$\mathbf{S}_i^t = \left[ L_{\text{local}}^i, \; \text{Var}(x^i), \; \Delta\tau^i, \; \text{bw}^i, \; \kappa^i \right] \in \mathbb{R}^5$$
+
+- **$L_{\text{local}}^i$**: Most recent training cross-entropy loss on the client's local partition.
+- **$\text{Var}(x^i)$**: Empirical input feature variance computed across local ECG beats: $\frac{1}{D}\sum_{d=1}^D \text{Var}(X_{:, d})$.
+- **$\Delta\tau^i$**: Wall-clock latency of the local training step in seconds.
+- **$\text{bw}^i$**: Simulated edge link bandwidth (Mbps) sampled from uniform $U(1.0, 10.0)$ or log-normal distributions.
+- **$\kappa^i$**: Curvature proxy derived from the second-difference statistics of the client's loss trajectory:
+  $$\kappa_t^i = \left| L_t^i - 2 L_{t-1}^i + L_{t-2}^i \right|$$
+
+**Observation Space**: Normalized into $[0.0, 1.0]$ via [`TelemetryTracker`](src/environment/telemetry.py):
+$$\mathcal{S} = \text{Box}\left(\text{low}=0.0, \; \text{high}=1.0, \; \text{shape}=(N, 5), \; \text{dtype}=\text{np.float32}\right)$$
+
+### 2. Action Space & Dynamic Spline Interpolation
+Each client $i$ is dynamically assigned an edge resolution action $a_i^t = (G_i^t, k_i^t)$ from 12 discrete configurations:
+$$\mathcal{A}_i = \{3, 5, 7, 10\} \times \{2, 3, 4\} \quad (12 \text{ actions})$$
+$$\mathcal{A}_{\text{global}} = \text{MultiDiscrete}([12] \times N)$$
+
+- **Continuous B-Spline Weight Transfer**: Because B-splines represent continuous curves over $[-1, 1]$, server weights on the reference grid $(G_{\text{ref}}=5, k_{\text{ref}}=3)$ are dynamically interpolated to $(G_i^t, k_i^t)$ for local training using PyTorch 1D linear interpolation (`F.interpolate`).
+- After local training, updated client weights are interpolated back to $(G_{\text{ref}}, k_{\text{ref}})$, enabling seamless weighted FedAvg parameter aggregation without architectural friction.
+
+### 3. Multi-Objective Reward Function (Equation 7)
+The environment computes the scalar step reward:
+$$R_t = \Delta\text{Acc}_{\text{global}} - \lambda_1 \sum_{i=1}^N \text{Params}(G_i^t, k_i^t) - \lambda_2 \sum_{i=1}^N \Delta\tau_i^t$$
+- $\Delta\text{Acc}_{\text{global}} = \text{Acc}_t - \text{Acc}_{t-1}$: Change in global classification accuracy on held-out test data.
+- $\lambda_1$: Active parameter penalty coefficient ($\lambda_1 = 1.0 \times 10^{-6}$ in [`configs/ppo.yaml`](configs/ppo.yaml)).
+- $\lambda_2$: Latency penalty coefficient ($\lambda_2 = 0.005$ in [`configs/ppo.yaml`](configs/ppo.yaml)).
+
+---
+
 ## Verification & Exploratory Data Analysis (EDA)
 
 All intermediate verification plots are generated deterministically and saved in [`results/figures/eda/`](results/figures/eda/):
@@ -318,6 +382,18 @@ Executes complete FL training loops across FedAvg-MLP, FedAvg-KAN, and FedProx-K
 .venv/bin/python experiments/run_baseline.py --config configs/paper_baseline.yaml --num_rounds 10 --local_epochs 3 --mu 0.01 --seed 42
 ```
 
+### 4. Execute Gymnasium Environment Rollout Sanity Check
+Executes a multi-client 2-step rollout using random action sampling on the `FederatedKANEnv` MDP, verifying telemetry tracking, dynamic B-spline weight interpolation, and multi-objective reward calculation:
+```bash
+.venv/bin/python src/environment/f1_env.py --config configs/ppo.yaml --steps 2 --seed 42
+```
+
+### 5. Run Environment Unit Tests
+Runs the complete test suite verifying telemetry normalization, curvature calculations, bandwidth simulation, action bijection, and Gymnasium MDP lifecycle:
+```bash
+.venv/bin/pytest tests/test_environment.py -v
+```
+
 ---
 
 ## Dataset Summary & Statistics
@@ -372,13 +448,17 @@ Split Breakdown:
 - [x] **Phase 5: Baseline Experiments & Benchmarks**
   - Multi-algorithm FL evaluation across all 9 combinations ($\text{FedAvg-MLP}$, $\text{FedAvg-KAN}$, $\text{FedProx-KAN} \times \alpha \in \{0.1, 0.5, 1.0\}$).
   - Serialization of per-round metrics, summary tables, and diagnostic plots in `results/baselines/`.
+- [x] **Phase 6: Resource-Adaptive Gymnasium Environment & Telemetry**
+  - Implemented 5-dim client-server telemetry tracker (`src/environment/telemetry.py`) with curvature $\kappa^i$, empirical variance, and dynamic bandwidth simulator.
+  - Formulated Gymnasium MDP (`src/environment/f1_env.py`) with $\text{Box}(0, 1, (N, 5))$ observation space and $\text{MultiDiscrete}([12] \times N)$ action space.
+  - Multi-objective step reward according to Equation (7) ($R_t = \Delta\text{Acc}_{\text{global}} - \lambda_1 \sum \text{Params} - \lambda_2 \sum \Delta\tau$).
+  - Continuous B-spline parameter interpolation across heterogeneous edge client configurations.
+  - 12 comprehensive unit tests in `tests/test_environment.py`.
 
 ### Active & Upcoming Milestones
-- [ ] **Phase 6: Resource-Aware Adaptive Controller (PPO / RL)**
-  - Implement edge telemetry monitor (`src/environment/telemetry.py`) tracking runtime compute, latency, and input variance.
-  - Formulate Gym/Gymnasium federated environment (`src/environment/fl_env.py`) with multi-objective rewards (accuracy gain vs latency / communication penalty).
-  - Train PPO agent (`src/controllers/ppo_controller.py`) dynamically assigning optimal $(G, k)$ configurations to heterogeneous edge clients.
-- [ ] **Phase 7: Long-Horizon Convergence & Edge Hardware Emulation**
+- [ ] **Phase 7: PPO Reinforcement Learning Policy Optimization**
+  - Implement and train PPO actor-critic network (`src/controllers/ppo_controller.py`) interacting with `FederatedKANEnv` to learn Pareto-optimal resource allocation.
+- [ ] **Phase 8: Long-Horizon Convergence & Edge Hardware Emulation**
   - Asymptotic convergence analysis (10–50 FL rounds).
   - Profiling memory footprint, peak RAM, and FLOPs on resource-constrained embedded profiles (Raspberry Pi / Jetson emulation).
 
