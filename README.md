@@ -39,7 +39,12 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
    - [Empirical Comparative Performance](#4-empirical-comparative-performance)
 10. [Comprehensive Technical Report & Experimental Findings](#comprehensive-technical-report--experimental-findings)
     - [Executive Summary](#executive-summary)
-    - [Master Benchmark Comparison Table](#master-benchmark-comparison-table)
+    - [Master Benchmark Comparison Table (Table 4.1 Deliverable)](#master-benchmark-comparison-table-table-41-deliverable)
+    - [Non-IID Robustness & Degradation Rate Analysis](#non-iid-robustness--degradation-rate-analysis)
+    - [Empirical Parameter Savings & Theoretical Benchmark Verification](#empirical-parameter-savings--theoretical-benchmark-verification)
+    - [Multi-Objective Reward Weight Sensitivity Sweep ($\lambda_1$ vs. $\lambda_2$)](#multi-objective-reward-weight-sensitivity-sweep-lambda_1-vs-lambda_2)
+    - [Thesis Deliverable Figures (Chapter 4)](#thesis-deliverable-figures-chapter-4)
+    - [Interactive Jupyter Notebooks](#interactive-jupyter-notebooks)
     - [Key Scientific Insights](#key-scientific-insights)
     - [Artifacts & Experiment Outputs Index](#artifacts--experiment-outputs-index)
 11. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
@@ -700,7 +705,20 @@ Trains the PPO agent on `FederatedKANEnv` and evaluates the policy on the held-o
 .venv/bin/python experiments/run_ppo.py --dry-run --alpha 0.5
 ```
 
-### 7. Run Complete Unit Test Suite
+### 7. Run Ablation Studies & Thesis Benchmark Suite
+Executes the multi-objective reward sensitivity sweep ($\lambda_1$ vs $\lambda_2$), non-IID degradation robustness analysis, generates Table 4.1 in Markdown and LaTeX, and exports Figures 4.1–4.4:
+```bash
+# Complete ablation suite and figure generation:
+.venv/bin/python experiments/run_ablation.py --all
+
+# Quick dry-run validation (1 round smoke test):
+.venv/bin/python experiments/run_ablation.py --dry_run
+
+# Generate only Table 4.1 and Chapter 4 figures from existing results:
+.venv/bin/python experiments/run_ablation.py --ablation --figures
+```
+
+### 8. Run Complete Unit Test Suite
 Runs all 16 unit tests across telemetry trackers, Gymnasium MDP environment, and adaptive controllers:
 ```bash
 .venv/bin/pytest tests/ -v
