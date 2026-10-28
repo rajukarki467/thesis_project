@@ -27,8 +27,11 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
    - [Diagnostic Visualizations](#diagnostic-visualizations)
 8. [Reinforcement Learning Gymnasium Environment](#reinforcement-learning-gymnasium-environment)
    - [State Space & Telemetry Vector](#1-state-space--telemetry-vector)
-   - [Action Space & Dynamic Spline Interpolation](#2-action-space--dynamic-spline-interpolation)
-   - [Multi-Objective Reward Function (Equation 7)](#3-multi-objective-reward-function-equation-7)
+   - [Action Space & Parameter Complexity](#2-action-space--parameter-complexity)
+   - [Dynamic B-Spline Weight Transfer](#3-dynamic-b-spline-weight-transfer)
+   - [Multi-Objective Reward Function (Equation 7)](#4-multi-objective-reward-function-equation-7)
+   - [Sanity Check Rollout & Benchmarks](#5-sanity-check-rollout--benchmarks)
+   - [Unit Testing Suite](#6-unit-testing-suite)
 9. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
 10. [Installation & Setup](#installation--setup)
 11. [CLI Usage](#cli-usage)
@@ -288,27 +291,95 @@ $$\mathbf{S}_i^t = \left[ L_{\text{local}}^i, \; \text{Var}(x^i), \; \Delta\tau^
 - **$L_{\text{local}}^i$**: Most recent training cross-entropy loss on the client's local partition.
 - **$\text{Var}(x^i)$**: Empirical input feature variance computed across local ECG beats: $\frac{1}{D}\sum_{d=1}^D \text{Var}(X_{:, d})$.
 - **$\Delta\tau^i$**: Wall-clock latency of the local training step in seconds.
-- **$\text{bw}^i$**: Simulated edge link bandwidth (Mbps) sampled from uniform $U(1.0, 10.0)$ or log-normal distributions.
+- **$\text{bw}^i$**: Simulated edge link bandwidth (Mbps) sampled from uniform $U(1.0, 10.0)$ or log-normal distributions via [`BandwidthSimulator`](src/environment/telemetry.py).
 - **$\kappa^i$**: Curvature proxy derived from the second-difference statistics of the client's loss trajectory:
-  $$\kappa_t^i = \left| L_t^i - 2 L_{t-1}^i + L_{t-2}^i \right|$$
+  $$\kappa_t^i = \begin{cases} \left| L_t^i - 2 L_{t-1}^i + L_{t-2}^i \right| & \text{for } t \ge 2 \\ |L_1^i - L_0^i| & \text{for } t = 1 \\ 0.0 & \text{for } t = 0 \end{cases}$$
 
-**Observation Space**: Normalized into $[0.0, 1.0]$ via [`TelemetryTracker`](src/environment/telemetry.py):
-$$\mathcal{S} = \text{Box}\left(\text{low}=0.0, \; \text{high}=1.0, \; \text{shape}=(N, 5), \; \text{dtype}=\text{np.float32}\right)$$
+#### State Normalization
+All state features are safely clamped and scaled to $[0.0, 1.0]$ via [`TelemetryTracker`](src/environment/telemetry.py) to provide stable RL policy inputs:
+$$\tilde{L} = \text{clip}\left(\frac{L}{L_{\max}}, 0, 1\right), \quad \tilde{V} = \text{clip}\left(\frac{V}{V_{\max}}, 0, 1\right), \quad \tilde{\tau} = \text{clip}\left(\frac{\Delta\tau}{\tau_{\max}}, 0, 1\right)$$
+$$\tilde{\text{bw}} = \text{clip}\left(\frac{\text{bw} - \text{bw}_{\min}}{\text{bw}_{\max} - \text{bw}_{\min}}, 0, 1\right), \quad \tilde{\kappa} = \text{clip}\left(\frac{\kappa}{\kappa_{\max}}, 0, 1\right)$$
 
-### 2. Action Space & Dynamic Spline Interpolation
+**Observation Space**:
+$$\mathcal{S} = \text{gymnasium.spaces.Box}\left(\text{low}=0.0, \; \text{high}=1.0, \; \text{shape}=(N, 5), \; \text{dtype}=\text{np.float32}\right)$$
+
+### 2. Action Space & Parameter Complexity
 Each client $i$ is dynamically assigned an edge resolution action $a_i^t = (G_i^t, k_i^t)$ from 12 discrete configurations:
 $$\mathcal{A}_i = \{3, 5, 7, 10\} \times \{2, 3, 4\} \quad (12 \text{ actions})$$
-$$\mathcal{A}_{\text{global}} = \text{MultiDiscrete}([12] \times N)$$
+$$\mathcal{A}_{\text{global}} = \text{gymnasium.spaces.MultiDiscrete}([12] \times N)$$
 
-- **Continuous B-Spline Weight Transfer**: Because B-splines represent continuous curves over $[-1, 1]$, server weights on the reference grid $(G_{\text{ref}}=5, k_{\text{ref}}=3)$ are dynamically interpolated to $(G_i^t, k_i^t)$ for local training using PyTorch 1D linear interpolation (`F.interpolate`).
-- After local training, updated client weights are interpolated back to $(G_{\text{ref}}, k_{\text{ref}})$, enabling seamless weighted FedAvg parameter aggregation without architectural friction.
+| Action Index | Grid Intervals ($G$) | Spline Degree ($k$) | Basis Splines ($G+k$) | Active Parameters ($[32, 16, 5]$) | Edge Model Footprint |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **0** | 3 | 2 | 5 | **3,573** | Ultra-lightweight edge profile |
+| **1** | 3 | 3 | 6 | 4,165 | Lightweight profile |
+| **2** | 3 | 4 | 7 | 4,757 | Compact profile |
+| **3** | 5 | 2 | 7 | 4,757 | Compact profile |
+| **4** | 5 | 3 | 8 | **5,349** | **Server Reference Configuration** |
+| **5** | 5 | 4 | 9 | 5,941 | Standard edge profile |
+| **6** | 7 | 2 | 9 | 5,941 | Standard edge profile |
+| **7** | 7 | 3 | 10 | 6,533 | High-expressivity profile |
+| **8** | 7 | 4 | 11 | 7,125 | High-expressivity profile |
+| **9** | 10 | 2 | 12 | 7,717 | Ultra-fine resolution |
+| **10** | 10 | 3 | 13 | 8,309 | Ultra-fine resolution |
+| **11** | 10 | 4 | 14 | **8,901** | Maximum capacity profile |
 
-### 3. Multi-Objective Reward Function (Equation 7)
+### 3. Dynamic B-Spline Weight Transfer
+- **Continuous Spline Manifold**: Because B-spline bases span a continuous function space $\phi(x)$ on $[-1, 1]$, server parameters on $(G_{\text{ref}}=5, k_{\text{ref}}=3)$ are dynamically adapted to client $i$'s selected $(G_i^t, k_i^t)$ via 1D linear interpolation (`torch.nn.functional.interpolate`).
+- Client $i$ trains locally with exactly $\text{Params}(G_i^t, k_i^t)$ weights, scaling memory and computation to match current edge telemetry.
+- Upon completion, client weights are interpolated back to $(G_{\text{ref}}, k_{\text{ref}})$ before transmission to the server, enabling standard weighted FedAvg aggregation without architectural incompatibility.
+
+### 4. Multi-Objective Reward Function (Equation 7)
 The environment computes the scalar step reward:
 $$R_t = \Delta\text{Acc}_{\text{global}} - \lambda_1 \sum_{i=1}^N \text{Params}(G_i^t, k_i^t) - \lambda_2 \sum_{i=1}^N \Delta\tau_i^t$$
-- $\Delta\text{Acc}_{\text{global}} = \text{Acc}_t - \text{Acc}_{t-1}$: Change in global classification accuracy on held-out test data.
-- $\lambda_1$: Active parameter penalty coefficient ($\lambda_1 = 1.0 \times 10^{-6}$ in [`configs/ppo.yaml`](configs/ppo.yaml)).
-- $\lambda_2$: Latency penalty coefficient ($\lambda_2 = 0.005$ in [`configs/ppo.yaml`](configs/ppo.yaml)).
+- $\Delta\text{Acc}_{\text{global}} = \text{Acc}_t - \text{Acc}_{t-1}$: Change in global classification accuracy on held-out patient test data ($18,175$ beats).
+- $\lambda_1 = 1.0 \times 10^{-6}$: Penalizes total active parameters across clients ($\approx 40,000 \text{ params} \to 0.04$ penalty).
+- $\lambda_2 = 0.005$: Penalizes total client training latency ($\approx 5.0\text{ s} \to 0.025$ penalty).
+
+### 5. Sanity Check Rollout & Benchmarks
+Executed via `.venv/bin/python src/environment/f1_env.py --config configs/ppo.yaml --steps 2 --seed 42`:
+
+```
+==============================================================================
+FEDERATED KAN GYMNASIUM ENVIRONMENT SANITY CHECK
+==============================================================================
+Config path : configs/ppo.yaml | Rollout seed: 42 | Num steps: 2
+
+Observation Space : Box(0.0, 1.0, (8, 5), float32)
+Action Space      : MultiDiscrete([12 12 12 12 12 12 12 12])
+Number of Clients : 8 | Max Rounds: 10 | Lambda1: 1e-6 | Lambda2: 0.005
+
+[RESET] Initial Test Accuracy: 0.0738 | Test Macro F1: 0.0521 | Range: [0.0000, 0.9507]
+
+--- STEP 1/2 ---
+  Actions (G, k)   : [(5, 4), (5, 4), (3, 4), (7, 4), (10, 3), (3, 2), (10, 4), (10, 4)]
+  Duration         : 7.268 s | Observation Shape: (8, 5)
+  Reward (Eq. 7)   : +0.415844
+    * ΔAcc_global  : +0.500000 (Accuracy: 0.0738 -> 0.7154)
+    * -λ1 * Params : -0.053448 (Total Params: 53,448)
+    * -λ2 * Latency: -0.030708 (Total Latency: 6.142 s)
+  Test Accuracy    : 0.7154 | Test Macro F1: 0.2486
+
+--- STEP 2/2 ---
+  Actions (G, k)   : [(5, 4), (3, 4), (3, 2), (3, 2), (3, 4), (10, 3), (10, 3), (7, 3)]
+  Duration         : 5.405 s | Observation Shape: (8, 5)
+  Reward (Eq. 7)   : +0.018565
+    * ΔAcc_global  : +0.086382 (Accuracy: 0.7154 -> 0.8018)
+    * -λ1 * Params : -0.045752 (Total Params: 45,752)
+    * -λ2 * Latency: -0.022065 (Total Latency: 4.413 s)
+  Test Accuracy    : 0.8018 | Test Macro F1: 0.3848
+==============================================================================
+SANITY CHECK COMPLETE: 2-step rollout succeeded! Total Reward: +0.434409
+==============================================================================
+```
+
+### 6. Unit Testing Suite
+All components are validated via [`tests/test_environment.py`](tests/test_environment.py) with 12 unit tests passing (`100%` pass rate):
+- `test_bandwidth_simulator_uniform` & `lognormal`: Verifies bounds in $[1.0, 10.0]\text{ Mbps}$ and reproducible seeding.
+- `test_client_telemetry_curvature`: Validates second-difference calculation $|L_t - 2L_{t-1} + L_{t-2}|$ across loss trajectories.
+- `test_client_telemetry_normalization_bounds`: Validates safe clamping into $[0.0, 1.0]$.
+- `test_telemetry_tracker_global_matrix`: Checks full $(N, 5)$ multi-client state matrix construction.
+- `test_action_mapping_bijection`: Verifies 1-to-1 bijection between 12 action indices and $(G, k)$ pairs.
+- `test_environment_spaces` & `lifecycle_and_reward`: Validates step transitions, Equation (7) reward consistency, and episode termination.
 
 ---
 
