@@ -24,11 +24,13 @@ An end-to-end framework for biomedical signal preprocessing, patient-level evalu
 5. [Model Architectures: FastKAN vs. Matched MLP](#model-architectures-fastkan-vs-matched-mlp)
 6. [Flower (flwr) Federated Integration](#flower-flwr-federated-integration)
 7. [Baseline Experiments & Empirical Results](#baseline-experiments--empirical-results)
+   - [Diagnostic Visualizations](#diagnostic-visualizations)
 8. [Verification & Exploratory Data Analysis (EDA)](#verification--exploratory-data-analysis-eda)
 9. [Installation & Setup](#installation--setup)
 10. [CLI Usage](#cli-usage)
 11. [Dataset Summary & Statistics](#dataset-summary--statistics)
-12. [References](#references)
+12. [Project Roadmap & Next Steps](#project-roadmap--next-steps)
+13. [References](#references)
 
 ---
 
@@ -52,6 +54,7 @@ thesis_project/
 │   ├── dataset.yaml                # Master dataset, filter, split, & partition configuration
 │   ├── fl.yaml                     # Federated learning hyperparameters
 │   ├── kan.yaml                    # Kolmogorov-Arnold Network model configuration
+│   ├── paper_baseline.yaml         # Multi-algorithm benchmark evaluation config
 │   └── ppo.yaml                    # Reinforcement learning controller configuration
 ├── data/
 │   ├── raw/
@@ -60,11 +63,15 @@ thesis_project/
 │   │   ├── beats/                  # Extracted .npy heartbeat arrays (X, y, record_ids)
 │   │   └── metadata/               # Patient splits, class distributions, partition tables
 │   └── partitions/                 # Client index allocations per Dirichlet alpha
+├── experiments/
+│   └── run_baseline.py             # FL baseline runner across Dirichlet alphas
 ├── notebooks/
 │   ├── 01_dataset_exploration.ipynb
 │   ├── 02_preprocessing_validation.ipynb
 │   └── 03_partition_analysis.ipynb
 ├── results/
+│   ├── baselines/                  # FL round metrics, summaries, and diagnostic plots
+│   │   └── figures/                # Accuracy, F1, and communication efficiency figures
 │   └── figures/
 │       └── eda/                    # Intermediate verification & diagnostic plots
 ├── src/
@@ -73,9 +80,17 @@ thesis_project/
 │   ├── dataset.py                  # WFDB record & annotation I/O helpers
 │   ├── splits.py                   # Patient-level record splitting
 │   ├── visualization.py            # High-resolution clinical ECG plotting routines
-│   ├── models/                     # Classification architectures (MLP, KAN, FastKAN)
+│   ├── models/                     # Classification architectures (MLP, FastKAN)
+│   │   ├── fastkan_model.py        # Modular FastKAN with dynamic (G, k) parameterization
+│   │   ├── mlp.py                  # Parameter-matched MLP baseline
+│   │   └── kan.py                  # FastKAN aliases & backward compatibility
 │   ├── federated/                  # Federated learning clients, servers, and aggregators
+│   │   ├── client.py               # Flower NumPyClient with telemetry & local validation
+│   │   ├── fedprox.py              # Proximal loss regularization term
+│   │   ├── server.py               # Centralized evaluator & FedAvg aggregation
+│   │   └── fedavg.py               # FedAvg module aliases
 │   └── utils/
+│       ├── metrics.py              # AAMI classification metrics (Macro F1, Accuracy)
 │       ├── reproducibility.py      # Deterministic seed controls (Python, NumPy, Torch)
 │       └── splits.py
 ├── requirements.txt
@@ -221,6 +236,16 @@ The full FL simulation across all 9 combinations ($\text{FedAvg-MLP}$, $\text{Fe
 > [!NOTE]
 > Under equivalent parameter budgets (~5.3k parameters), FastKAN achieves a **+11.17% accuracy gain** and **+0.1004 Macro F1 increase** over the matched MLP baseline under extreme non-IID skew ($\alpha = 0.1$), demonstrating high expressivity on non-linear morphological ECG features.
 
+### Diagnostic Visualizations
+
+All baseline comparison plots are stored in [`results/baselines/figures/`](results/baselines/figures/):
+
+| Figure | Description |
+| :--- | :--- |
+| `accuracy_vs_rounds_comparison.png` | Global test accuracy progression over training rounds for FedAvg-MLP, FedAvg-KAN, and FedProx-KAN across $\alpha \in \{0.1, 0.5, 1.0\}$. |
+| `macro_f1_vs_rounds_comparison.png` | Macro F1 trajectory comparison showing FastKAN's superior recall on minority AAMI classes under extreme heterogeneity. |
+| `communication_efficiency_comparison.png` | Cumulative network footprint (MB) versus achieved Macro F1 trade-off analysis. |
+
 ---
 
 ## Verification & Exploratory Data Analysis (EDA)
@@ -264,7 +289,7 @@ pip install -r requirements.txt
 
 ## CLI Usage
 
-Both pipelines are executable via command-line interfaces that parse parameters from [`configs/dataset.yaml`](configs/dataset.yaml) and support deterministic seeding.
+All pipelines and baseline experiments are executable via command-line interfaces that parse parameters from YAML configs and support deterministic seeding.
 
 ### 1. Execute Preprocessing Pipeline
 Processes all 48 MIT-BIH recordings, performs filtering, extracts beats, applies normalization and $n=32$ resampling, enforces patient splits, and saves verification figures:
@@ -280,6 +305,17 @@ Processes all 48 MIT-BIH recordings, performs filtering, extracts beats, applies
 Partitions the training split among simulated federated clients for $\alpha \in [0.1, 0.5, 1.0]$:
 ```bash
 .venv/bin/python src/partition.py --config configs/dataset.yaml --alphas 0.1 0.5 1.0 --num_clients 8 --seed 42
+```
+
+### 3. Run Federated Baseline Experiments
+Executes complete FL training loops across FedAvg-MLP, FedAvg-KAN, and FedProx-KAN for $\alpha \in \{0.1, 0.5, 1.0\}$, evaluating against the held-out patient test split:
+```bash
+.venv/bin/python experiments/run_baseline.py --config configs/paper_baseline.yaml --num_rounds 3 --local_epochs 1
+```
+*Optional CLI overrides:*
+```bash
+# Run 10 rounds with 3 local epochs and custom FedProx mu:
+.venv/bin/python experiments/run_baseline.py --config configs/paper_baseline.yaml --num_rounds 10 --local_epochs 3 --mu 0.01 --seed 42
 ```
 
 ---
@@ -312,6 +348,39 @@ Split Breakdown:
     ├── F:       379  (2.09%)
     └── Q:     3,886 (21.38%)
 ```
+
+---
+
+## Project Roadmap & Next Steps
+
+### Completed Milestones
+- [x] **Phase 1: ECG Signal Preprocessing & AAMI Standardization**
+  - Butterworth zero-phase bandpass filter ($0.5-40\text{ Hz}$, order 3).
+  - R-peak window segmentation ($360$ samples, $1.0\text{ s}$) and $z$-score normalization.
+  - Linear downsampling to $n=32$ features.
+  - Patient-level split ($33$ train, $7$ val, $8$ test recordings; zero patient leakage).
+- [x] **Phase 2: Federated Non-IID Dirichlet Simulation**
+  - Class-conditional Dirichlet partitioning for $N=8$ clients across $\alpha \in \{0.1, 0.5, 1.0\}$.
+  - Client metadata serialization and label skew visualization.
+- [x] **Phase 3: Deep Learning Architectures**
+  - Modular FastKAN classifier with Cox-de Boor B-splines and dynamic $(G, k)$ edge reconfigurability ($G \in \{3, 5, 7, 10\}, k \in \{2, 3, 4\}$).
+  - Parameter-matched MLP baseline ($5,351$ vs $5,349$ parameters) for rigorous fair evaluation.
+- [x] **Phase 4: Flower (`flwr`) Federated Integration**
+  - `FlowerECGClient(NumPyClient)` with client telemetry (`execution_latency`, `local_loss`, `input_variance`) and local validation.
+  - FedProx proximal regularization term ($\frac{\mu}{2}\|\theta - \theta_t\|^2$).
+  - Centralized test evaluation tracking Accuracy, Macro F1, and communication volume.
+- [x] **Phase 5: Baseline Experiments & Benchmarks**
+  - Multi-algorithm FL evaluation across all 9 combinations ($\text{FedAvg-MLP}$, $\text{FedAvg-KAN}$, $\text{FedProx-KAN} \times \alpha \in \{0.1, 0.5, 1.0\}$).
+  - Serialization of per-round metrics, summary tables, and diagnostic plots in `results/baselines/`.
+
+### Active & Upcoming Milestones
+- [ ] **Phase 6: Resource-Aware Adaptive Controller (PPO / RL)**
+  - Implement edge telemetry monitor (`src/environment/telemetry.py`) tracking runtime compute, latency, and input variance.
+  - Formulate Gym/Gymnasium federated environment (`src/environment/fl_env.py`) with multi-objective rewards (accuracy gain vs latency / communication penalty).
+  - Train PPO agent (`src/controllers/ppo_controller.py`) dynamically assigning optimal $(G, k)$ configurations to heterogeneous edge clients.
+- [ ] **Phase 7: Long-Horizon Convergence & Edge Hardware Emulation**
+  - Asymptotic convergence analysis (10–50 FL rounds).
+  - Profiling memory footprint, peak RAM, and FLOPs on resource-constrained embedded profiles (Raspberry Pi / Jetson emulation).
 
 ---
 
