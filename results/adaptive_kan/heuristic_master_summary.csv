@@ -1,0 +1,2 @@
+controller,alpha,num_rounds,num_clients,seed,total_execution_time_seconds,initial_accuracy,final_accuracy,initial_macro_f1,final_macro_f1,final_loss,mean_parameters_per_round,mean_latency_per_round,total_reward
+HeuristicController,0.5,2,8,42,13.288011650999579,0.07383768913342503,0.8012654745529574,0.05213705425700579,0.385558455164558,0.6603878424239782,46344.0,5.546121203500206,0.4399388209773776

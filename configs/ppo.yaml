@@ -39,6 +39,20 @@ reward:
   lambda2: 0.005               # Scaling penalty for total client latency (~2.0s -> ~0.01 penalty)
   delta_clip: 0.5              # Clip delta accuracy to [-delta_clip, delta_clip] for stability
 
+# Heuristic Fallback Controller Configuration (Section 4.2)
+heuristic:
+  weights:
+    w1: 1.0       # Weight for local loss L_local
+    w2: 1.0       # Weight for input variance Var(x)
+    w3: 1.0       # Weight for inverse bandwidth 1 / bw
+  quantiles:
+    high_percentile: 75.0   # Top 25% complexity -> fine configuration (G=10, k=4)
+    low_percentile: 25.0    # Bottom 25% complexity -> coarse configuration (G=3, k=2)
+  configurations:
+    high: [10, 4]           # Fine resolution (G=10, k=4)
+    medium: [5, 3]          # Medium resolution (G=5, k=3)
+    low: [3, 2]             # Coarse resolution (G=3, k=2)
+
 # Gymnasium Environment Hyperparameters
 environment:
   num_clients: 8               # N participating federated clients

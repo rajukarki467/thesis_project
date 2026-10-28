@@ -1,0 +1,2 @@
+controller,alpha,num_rounds,num_clients,seed,total_eval_duration_seconds,initial_accuracy,final_accuracy,initial_macro_f1,final_macro_f1,final_loss,mean_parameters_per_round,mean_training_latency_per_round,mean_controller_overhead_ms,peak_ram_mb,peak_gpu_mb,total_reward
+PPOController,0.5,2,8,42,10.082728028999554,0.07383768913342503,0.7875103163686382,0.05213705425700579,0.3734191111921337,0.6808776280673366,50784.0,4.082982028499828,1.1885719995916588,567.82421875,0.0,0.4396379431262809
