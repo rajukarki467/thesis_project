@@ -1,0 +1,311 @@
+{
+  "num_rounds": 2,
+  "local_epochs": 1,
+  "num_clients": 2,
+  "final_metrics": {
+    "round": 2,
+    "test_loss": 1.4923496080350271,
+    "test_accuracy": 0.6637658227848101,
+    "test_macro_f1": 0.19947693770803615,
+    "test_weighted_f1": 0.5296238947374757,
+    "test_macro_precision": 0.16594145569620253,
+    "test_macro_recall": 0.25,
+    "round_duration": 0.13538455963134766,
+    "mean_client_loss": 1.5242297271334897,
+    "mean_client_acc": 0.9546494749727201,
+    "class_metrics": {
+      "Normal (N)": {
+        "f1": 0.7979077508321446,
+        "precision": 0.6637658227848101,
+        "recall": 1.0
+      },
+      "Supraventricular (S)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Ventricular (V)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Fusion (F)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Unclassified (Q)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        839,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        7,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        417,
+        0,
+        0,
+        0,
+        0
+      ]
+    ]
+  },
+  "history": [
+    {
+      "round": 0,
+      "test_loss": 1.5905395338806925,
+      "test_accuracy": 0.3275316455696203,
+      "test_macro_f1": 0.09951639164292822,
+      "test_weighted_f1": 0.16494876879543643,
+      "test_macro_precision": 0.16602717825739408,
+      "test_macro_recall": 0.19831991379482825,
+      "round_duration": 0.0,
+      "mean_client_loss": 0.0,
+      "mean_client_acc": 0.0,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.0023781212841854932,
+          "precision": 0.5,
+          "recall": 0.0011918951132300357
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.4952038369304556,
+          "precision": 0.3301358912869704,
+          "recall": 0.9904076738609112
+        }
+      },
+      "confusion_matrix": [
+        [
+          1,
+          0,
+          0,
+          7,
+          831
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          7
+        ],
+        [
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          2,
+          2,
+          413
+        ]
+      ]
+    },
+    {
+      "round": 1,
+      "test_loss": 1.541730924497677,
+      "test_accuracy": 0.5822784810126582,
+      "test_macro_f1": 0.18586466165413534,
+      "test_weighted_f1": 0.49093873925319625,
+      "test_macro_precision": 0.1633666538510829,
+      "test_macro_recall": 0.21991179404509764,
+      "round_duration": 1.3020634651184082,
+      "mean_client_loss": 1.592601337312531,
+      "mean_client_acc": 0.17544480590558792,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.7358395989974937,
+          "precision": 0.6349480968858131,
+          "recall": 0.8748510131108462
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.007619047619047619,
+          "precision": 0.018518518518518517,
+          "recall": 0.004796163069544364
+        },
+        "Unclassified (Q)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          734,
+          0,
+          0,
+          0,
+          105
+        ],
+        [
+          6,
+          0,
+          0,
+          0,
+          1
+        ],
+        [
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          415,
+          0,
+          0,
+          0,
+          2
+        ]
+      ]
+    },
+    {
+      "round": 2,
+      "test_loss": 1.4923496080350271,
+      "test_accuracy": 0.6637658227848101,
+      "test_macro_f1": 0.19947693770803615,
+      "test_weighted_f1": 0.5296238947374757,
+      "test_macro_precision": 0.16594145569620253,
+      "test_macro_recall": 0.25,
+      "round_duration": 0.13538455963134766,
+      "mean_client_loss": 1.5242297271334897,
+      "mean_client_acc": 0.9546494749727201,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.7979077508321446,
+          "precision": 0.6637658227848101,
+          "recall": 1.0
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          839,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          417,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ]
+}

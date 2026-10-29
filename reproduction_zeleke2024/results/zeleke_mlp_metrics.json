@@ -1,0 +1,387 @@
+{
+  "num_rounds": 3,
+  "local_epochs": 5,
+  "num_clients": 5,
+  "final_metrics": {
+    "round": 3,
+    "test_loss": 0.7731933998085602,
+    "test_accuracy": 0.8651772660818714,
+    "test_macro_f1": 0.32248417144876,
+    "test_weighted_f1": 0.813857505323867,
+    "test_macro_precision": 0.3332272555603185,
+    "test_macro_recall": 0.3191881122546037,
+    "round_duration": 6.147454261779785,
+    "mean_client_loss": 2.208807380324209,
+    "mean_client_acc": 0.5437459858645474,
+    "class_metrics": {
+      "Normal (N)": {
+        "f1": 0.9286466764305352,
+        "precision": 0.868714546678204,
+        "recall": 0.9974609482806204
+      },
+      "Supraventricular (S)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Ventricular (V)": {
+        "f1": 0.6837741808132649,
+        "precision": 0.7974217311233885,
+        "recall": 0.598479612992398
+      },
+      "Fusion (F)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Unclassified (Q)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        18071,
+        0,
+        46,
+        0,
+        0
+      ],
+      [
+        552,
+        0,
+        4,
+        0,
+        0
+      ],
+      [
+        581,
+        0,
+        866,
+        0,
+        0
+      ],
+      [
+        154,
+        0,
+        6,
+        0,
+        0
+      ],
+      [
+        1444,
+        0,
+        164,
+        0,
+        0
+      ]
+    ]
+  },
+  "history": [
+    {
+      "round": 0,
+      "test_loss": 1.5945293756953456,
+      "test_accuracy": 0.22930372807017543,
+      "test_macro_f1": 0.14531434971161378,
+      "test_weighted_f1": 0.2784264259026941,
+      "test_macro_precision": 0.23605092886208617,
+      "test_macro_recall": 0.2921979766959001,
+      "round_duration": 0.0,
+      "mean_client_loss": 0.0,
+      "mean_client_acc": 0.0,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.3144762509640249,
+          "precision": 0.8828323993886907,
+          "recall": 0.19131202737760114
+        },
+        "Supraventricular (S)": {
+          "f1": 0.04722222222222222,
+          "precision": 0.038461538461538464,
+          "recall": 0.06115107913669065
+        },
+        "Ventricular (V)": {
+          "f1": 0.05965202982601491,
+          "precision": 0.07445708376421924,
+          "recall": 0.0497581202487906
+        },
+        "Fusion (F)": {
+          "f1": 0.14263565891472868,
+          "precision": 0.09484536082474226,
+          "recall": 0.2875
+        },
+        "Unclassified (Q)": {
+          "f1": 0.1625855866310781,
+          "precision": 0.08965826187124024,
+          "recall": 0.871268656716418
+        }
+      },
+      "confusion_matrix": [
+        [
+          3466,
+          454,
+          777,
+          286,
+          13134
+        ],
+        [
+          54,
+          34,
+          104,
+          27,
+          337
+        ],
+        [
+          359,
+          225,
+          72,
+          118,
+          673
+        ],
+        [
+          32,
+          0,
+          1,
+          46,
+          81
+        ],
+        [
+          15,
+          171,
+          13,
+          8,
+          1401
+        ]
+      ]
+    },
+    {
+      "round": 1,
+      "test_loss": 0.6838795565373716,
+      "test_accuracy": 0.8277138157894737,
+      "test_macro_f1": 0.18114735658042744,
+      "test_weighted_f1": 0.7496908486768101,
+      "test_macro_precision": 0.16554276315789473,
+      "test_macro_recall": 0.2,
+      "round_duration": 6.874798536300659,
+      "mean_client_loss": 1.1681201464723714,
+      "mean_client_acc": 0.7537581911837712,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.9057367829021372,
+          "precision": 0.8277138157894737,
+          "recall": 1.0
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          18117,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          556,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1447,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          160,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1608,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "round": 2,
+      "test_loss": 0.7517423131312543,
+      "test_accuracy": 0.8541666666666666,
+      "test_macro_f1": 0.2970464251400937,
+      "test_weighted_f1": 0.7990621036764524,
+      "test_macro_precision": 0.34788103243718405,
+      "test_macro_recall": 0.2826983739533163,
+      "round_duration": 6.0012407302856445,
+      "mean_client_loss": 1.587018887956667,
+      "mean_client_acc": 0.5243488535862139,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.9202603742880391,
+          "precision": 0.8531422375182688,
+          "recall": 0.9988408676933267
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.5649717514124294,
+          "precision": 0.8862629246676514,
+          "recall": 0.414651002073255
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          18096,
+          0,
+          21,
+          0,
+          0
+        ],
+        [
+          553,
+          0,
+          3,
+          0,
+          0
+        ],
+        [
+          847,
+          0,
+          600,
+          0,
+          0
+        ],
+        [
+          160,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1555,
+          0,
+          53,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "round": 3,
+      "test_loss": 0.7731933998085602,
+      "test_accuracy": 0.8651772660818714,
+      "test_macro_f1": 0.32248417144876,
+      "test_weighted_f1": 0.813857505323867,
+      "test_macro_precision": 0.3332272555603185,
+      "test_macro_recall": 0.3191881122546037,
+      "round_duration": 6.147454261779785,
+      "mean_client_loss": 2.208807380324209,
+      "mean_client_acc": 0.5437459858645474,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.9286466764305352,
+          "precision": 0.868714546678204,
+          "recall": 0.9974609482806204
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Ventricular (V)": {
+          "f1": 0.6837741808132649,
+          "precision": 0.7974217311233885,
+          "recall": 0.598479612992398
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          18071,
+          0,
+          46,
+          0,
+          0
+        ],
+        [
+          552,
+          0,
+          4,
+          0,
+          0
+        ],
+        [
+          581,
+          0,
+          866,
+          0,
+          0
+        ],
+        [
+          154,
+          0,
+          6,
+          0,
+          0
+        ],
+        [
+          1444,
+          0,
+          164,
+          0,
+          0
+        ]
+      ]
+    }
+  ]
+}

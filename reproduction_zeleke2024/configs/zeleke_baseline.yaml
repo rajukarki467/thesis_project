@@ -1,0 +1,67 @@
+# ==============================================================================
+# Configuration: Zeleke & Bochicchio (IEEE BigData 2024) Baseline Reproduction
+# "Federated Kolmogorov-Arnold Networks for Health Data Analysis: A Study Using ECG Signal"
+# ==============================================================================
+
+experiment:
+  name: "zeleke_bigdata2024_reproduction"
+  paper_title: "Federated Kolmogorov-Arnold Networks for Health Data Analysis: A Study Using ECG Signal"
+  authors: "Sileshi Nibret Zeleke and Mario A. Bochicchio"
+  conference: "2024 IEEE International Conference on Big Data (IEEE BigData 2024)"
+  seed: 42
+  num_clients: 5
+  num_rounds: 10
+  dirichlet_alpha: 0.5
+
+dataset:
+  name: "mit-bih-arrhythmia"
+  raw_dir: "data/raw/mit-bih-arrhythmia-database-1.0.0"
+  cache_dir: "reproduction_zeleke2024/data"
+  sampling_frequency: 360
+  channel: 0
+  train_ratio: 0.80
+  test_ratio: 0.20
+  target_features: 32
+  aami_classes: ["Normal (N)", "Supraventricular (S)", "Ventricular (V)", "Fusion (F)", "Unclassified (Q)"]
+
+wavelet:
+  family: "db5"
+  level: 9
+  suppress_baseline: true   # Zero out cA9 approximation coefficients (<0.35 Hz)
+  suppress_hf_noise: true   # Zero out cD1/cD2 detail coefficients (>45 Hz)
+
+kan:
+  type: "kan"
+  input_dim: 32
+  hidden_dims: [64]         # Default 1 hidden layer; [64, 32] for Fig 3 comparison
+  num_classes: 5
+  grid_size: 30             # Base paper G=30
+  spline_order: 2           # Base paper quadratic spline k=2
+  grid_range: 1.0
+  use_base_update: true
+  use_bias: true
+
+mlp:
+  type: "mlp"
+  input_dim: 32
+  hidden_dims: [64, 32]
+  num_classes: 5
+  matched_params: true      # Match parameter budget for strictly fair comparison
+  dropout: 0.0
+
+federated:
+  strategy: "fedavg"
+  num_rounds: 10            # 10 communication rounds
+  local_epochs: 30          # 30 local epochs per round
+  batch_size: 32
+  optimizer: "adam"
+  learning_rate: 1.0e-5     # Adam lr=1e-5 (0.00001)
+  weight_decay: 0.0
+  class_weight: "balanced"  # Balances minority classes (S, V, F, Q) for Macro F1
+
+paper_targets:
+  kan_test_accuracy: 93.73
+  kan_macro_f1: 92.90
+  mlp_test_accuracy: 91.65
+
+results_dir: "reproduction_zeleke2024/results"

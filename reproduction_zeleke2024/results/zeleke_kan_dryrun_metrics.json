@@ -1,0 +1,311 @@
+{
+  "num_rounds": 2,
+  "local_epochs": 1,
+  "num_clients": 2,
+  "final_metrics": {
+    "round": 2,
+    "test_loss": 1.708749986902068,
+    "test_accuracy": 0.24920886075949367,
+    "test_macro_f1": 0.11010900532639664,
+    "test_weighted_f1": 0.35598197990018293,
+    "test_macro_precision": 0.21556487550445252,
+    "test_macro_recall": 0.13223796579967423,
+    "round_duration": 0.26032352447509766,
+    "mean_client_loss": 1.4621586419535406,
+    "mean_client_acc": 0.2661298840910814,
+    "class_metrics": {
+      "Normal (N)": {
+        "f1": 0.5316239316239316,
+        "precision": 0.9395770392749244,
+        "recall": 0.3706793802145411
+      },
+      "Supraventricular (S)": {
+        "f1": 0.00966183574879227,
+        "precision": 0.004914004914004914,
+        "recall": 0.2857142857142857
+      },
+      "Ventricular (V)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Fusion (F)": {
+        "f1": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "Unclassified (Q)": {
+        "f1": 0.009259259259259259,
+        "precision": 0.13333333333333333,
+        "recall": 0.004796163069544364
+      }
+    },
+    "confusion_matrix": [
+      [
+        311,
+        401,
+        108,
+        6,
+        13
+      ],
+      [
+        4,
+        2,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        16,
+        4,
+        320,
+        75,
+        2
+      ]
+    ]
+  },
+  "history": [
+    {
+      "round": 0,
+      "test_loss": 1.8580363400374786,
+      "test_accuracy": 0.04509493670886076,
+      "test_macro_f1": 0.027166088760790123,
+      "test_weighted_f1": 0.07812142211444231,
+      "test_macro_precision": 0.17929124370718824,
+      "test_macro_recall": 0.1274022770545695,
+      "round_duration": 0.0,
+      "mean_client_loss": 0.0,
+      "mean_client_acc": 0.0,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.1130820399113082,
+          "precision": 0.8095238095238095,
+          "recall": 0.060786650774731825
+        },
+        "Supraventricular (S)": {
+          "f1": 0.0136986301369863,
+          "precision": 0.006932409012131715,
+          "recall": 0.5714285714285714
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.00904977375565611,
+          "precision": 0.08,
+          "recall": 0.004796163069544364
+        }
+      },
+      "confusion_matrix": [
+        [
+          51,
+          570,
+          179,
+          16,
+          23
+        ],
+        [
+          0,
+          4,
+          3,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          12,
+          3,
+          315,
+          85,
+          2
+        ]
+      ]
+    },
+    {
+      "round": 1,
+      "test_loss": 1.7814090553718278,
+      "test_accuracy": 0.13844936708860758,
+      "test_macro_f1": 0.07089107516576368,
+      "test_weighted_f1": 0.22200029726587198,
+      "test_macro_precision": 0.20551436156354086,
+      "test_macro_recall": 0.15553100172679835,
+      "round_duration": 1.392904281616211,
+      "mean_client_loss": 1.5482506630492558,
+      "mean_client_acc": 0.10890983262333051,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.3297560975609756,
+          "precision": 0.9086021505376344,
+          "recall": 0.20143027413587605
+        },
+        "Supraventricular (S)": {
+          "f1": 0.015503875968992248,
+          "precision": 0.007858546168958742,
+          "recall": 0.5714285714285714
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.009195402298850575,
+          "precision": 0.1111111111111111,
+          "recall": 0.004796163069544364
+        }
+      },
+      "confusion_matrix": [
+        [
+          169,
+          502,
+          139,
+          13,
+          16
+        ],
+        [
+          1,
+          4,
+          2,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          16,
+          3,
+          316,
+          80,
+          2
+        ]
+      ]
+    },
+    {
+      "round": 2,
+      "test_loss": 1.708749986902068,
+      "test_accuracy": 0.24920886075949367,
+      "test_macro_f1": 0.11010900532639664,
+      "test_weighted_f1": 0.35598197990018293,
+      "test_macro_precision": 0.21556487550445252,
+      "test_macro_recall": 0.13223796579967423,
+      "round_duration": 0.26032352447509766,
+      "mean_client_loss": 1.4621586419535406,
+      "mean_client_acc": 0.2661298840910814,
+      "class_metrics": {
+        "Normal (N)": {
+          "f1": 0.5316239316239316,
+          "precision": 0.9395770392749244,
+          "recall": 0.3706793802145411
+        },
+        "Supraventricular (S)": {
+          "f1": 0.00966183574879227,
+          "precision": 0.004914004914004914,
+          "recall": 0.2857142857142857
+        },
+        "Ventricular (V)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Fusion (F)": {
+          "f1": 0.0,
+          "precision": 0.0,
+          "recall": 0.0
+        },
+        "Unclassified (Q)": {
+          "f1": 0.009259259259259259,
+          "precision": 0.13333333333333333,
+          "recall": 0.004796163069544364
+        }
+      },
+      "confusion_matrix": [
+        [
+          311,
+          401,
+          108,
+          6,
+          13
+        ],
+        [
+          4,
+          2,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          16,
+          4,
+          320,
+          75,
+          2
+        ]
+      ]
+    }
+  ]
+}
