@@ -100,11 +100,15 @@ class FederatedKANEnv(gym.Env):
     max_rounds : int
         Maximum communication rounds per episode (default 10).
     lambda1 : float
-        Parameter penalty scaling coefficient in Equation (7) (default 1e-6).
+        Parameter penalty scaling coefficient in Equation (7) (default 0.20 when normalized, 1e-6 otherwise).
     lambda2 : float
         Latency penalty scaling coefficient in Equation (7) (default 0.005).
     alpha : float
         Dirichlet non-IID skew parameter for client partitioning (default 0.5).
+    normalize_params : bool
+        Whether to normalize parameter cost against reference baseline budget (default True).
+    baseline_budget : float
+        Reference parameter budget (default num_clients * 5349.0).
     device : Optional[str | torch.device]
         Computation device ('cpu' or 'cuda').
     seed : int
@@ -123,6 +127,8 @@ class FederatedKANEnv(gym.Env):
         lambda1: Optional[float] = None,
         lambda2: Optional[float] = None,
         alpha: Optional[float] = None,
+        normalize_params: Optional[bool] = None,
+        baseline_budget: Optional[float] = None,
         device: Optional[Union[str, torch.device]] = None,
         seed: int = 42,
     ):
@@ -142,10 +148,24 @@ class FederatedKANEnv(gym.Env):
         self.global_seed = int(seed if seed is not None else env_cfg.get("seed", 42))
 
         # Reward hyperparameters (Equation 7)
-        self.lambda1 = float(lambda1 if lambda1 is not None else reward_cfg.get("lambda1", 1.0e-6))
+        if normalize_params is not None:
+            self.normalize_params = bool(normalize_params)
+        else:
+            self.normalize_params = bool(reward_cfg.get("normalize_params", True))
+
+        ref_params_per_client = float(reward_cfg.get("baseline_params_per_client", 5349.0))
+        if baseline_budget is not None:
+            self.baseline_budget = float(baseline_budget)
+        elif "baseline_budget" in reward_cfg and self.num_clients == env_cfg.get("num_clients", 8):
+            self.baseline_budget = float(reward_cfg["baseline_budget"])
+        else:
+            self.baseline_budget = float(self.num_clients * ref_params_per_client)
+
+        default_lambda1 = 0.20 if self.normalize_params else 1.0e-6
+        self.lambda1 = float(lambda1 if lambda1 is not None else reward_cfg.get("lambda1", default_lambda1))
         self.lambda2 = float(lambda2 if lambda2 is not None else reward_cfg.get("lambda2", 0.005))
         self.accuracy_metric = reward_cfg.get("accuracy_metric", "accuracy")
-        self.delta_clip = float(reward_cfg.get("delta_clip", 0.5))
+        self.delta_clip = float(reward_cfg.get("delta_clip", 0.15))
 
         # Federated training hyperparameters
         self.local_epochs = int(fed_cfg.get("local_epochs", 1))
@@ -492,7 +512,7 @@ class FederatedKANEnv(gym.Env):
         f1_curr = float(test_metrics.get("macro_f1", 0.0))
 
         # 4. Multi-Objective Reward Calculation (Equation 7)
-        # R_t = ΔAcc_global - λ1 * Σ Params(G_i^t, k_i^t) - λ2 * Σ Δτ_i^t
+        # R_t = ΔAcc_global - λ1 * P_cost - λ2 * Σ Δτ_i^t
         delta_acc = float(acc_curr - self.acc_prev)
         # Safe clipping for numerical gradient stability
         delta_acc_clipped = float(np.clip(delta_acc, -self.delta_clip, self.delta_clip))
@@ -500,7 +520,13 @@ class FederatedKANEnv(gym.Env):
         sum_params = float(sum(client_params_list))
         sum_latency = float(sum(client_latencies_list))
 
-        param_penalty = float(self.lambda1 * sum_params)
+        if self.normalize_params and self.baseline_budget > 0:
+            relative_param_cost = float((sum_params - self.baseline_budget) / self.baseline_budget)
+            param_penalty = float(self.lambda1 * relative_param_cost)
+        else:
+            relative_param_cost = float(sum_params / self.baseline_budget) if self.baseline_budget > 0 else 0.0
+            param_penalty = float(self.lambda1 * sum_params)
+
         latency_penalty = float(self.lambda2 * sum_latency)
 
         reward = float(delta_acc_clipped - param_penalty - latency_penalty)
@@ -517,6 +543,12 @@ class FederatedKANEnv(gym.Env):
         terminated = bool(self.current_round >= self.max_rounds)
         truncated = False
 
+        savings_pct = (
+            float((self.baseline_budget - sum_params) / self.baseline_budget * 100.0)
+            if self.baseline_budget > 0
+            else 0.0
+        )
+
         # Diagnostic info dictionary
         info: Dict[str, Any] = {
             "round": self.current_round,
@@ -531,6 +563,8 @@ class FederatedKANEnv(gym.Env):
             "reward_components": {
                 "delta_accuracy": delta_acc_clipped,
                 "param_penalty": param_penalty,
+                "relative_param_cost": relative_param_cost,
+                "parameter_savings_pct": savings_pct,
                 "latency_penalty": latency_penalty,
                 "total_reward": reward,
             },
@@ -612,9 +646,9 @@ def run_sanity_check(
         print(f"  Reward (Equation 7)      : {reward:+.6f}")
         rc = step_info["reward_components"]
         print(
-            f"    * ΔAcc_global     : {rc['delta_accuracy']:+.6f}\n"
-            f"    * -λ1 * Σ Params  : -{rc['param_penalty']:.6f} (Σ Params: {step_info['total_parameters']:.0f})\n"
-            f"    * -λ2 * Σ Latency : -{rc['latency_penalty']:.6f} (Σ Latency: {step_info['total_latency']:.3f}s)"
+            f"    * ΔAcc_global        : {rc['delta_accuracy']:+.6f}\n"
+            f"    * -λ1 * Cost(Params) : -{rc['param_penalty']:.6f} (Σ Params: {step_info['total_parameters']:.0f}, Savings: {rc.get('parameter_savings_pct', 0.0):+.1f}%)\n"
+            f"    * -λ2 * Σ Latency    : -{rc['latency_penalty']:.6f} (Σ Latency: {step_info['total_latency']:.3f}s)"
         )
         print(
             f"  Global Test Accuracy     : {step_info['global_accuracy']:.4f} "

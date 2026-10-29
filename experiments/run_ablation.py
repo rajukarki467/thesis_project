@@ -78,7 +78,7 @@ logger = logging.getLogger("run_ablation")
 
 
 def run_reward_sensitivity_sweep(
-    lambda1_values: Sequence[float] = (1e-6, 1e-5, 1e-4),
+    lambda1_values: Sequence[float] = (0.05, 0.20, 0.50),
     lambda2_values: Sequence[float] = (0.001, 0.01, 0.1),
     num_rounds: int = 3,
     alpha: float = 0.5,
@@ -437,8 +437,8 @@ def main():
     set_seed(args.seed)
     rounds = 1 if args.dry_run else args.num_rounds
 
-    l1_vals = [1e-6, 1e-4] if args.dry_run else [1e-6, 1e-5, 1e-4]
-    l2_vals = [0.001, 0.1] if args.dry_run else [0.001, 0.01, 0.1]
+    l1_vals = [0.05, 0.20] if args.dry_run else [0.05, 0.20, 0.50]
+    l2_vals = [0.001, 0.01] if args.dry_run else [0.001, 0.005, 0.01]
 
     # 1. Reward Sensitivity Sweep
     if args.sweep or args.all:
