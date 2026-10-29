@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-SUPPORTED_GRID_SIZES = {3, 5, 7, 10}
+SUPPORTED_GRID_SIZES = {3, 5, 7, 10, 30}
 SUPPORTED_SPLINE_ORDERS = {2, 3, 4}
 
 
