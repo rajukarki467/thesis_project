@@ -280,9 +280,9 @@ def main():
     output_dir = PROJECT_ROOT / args.output_dir
 
     if args.dry_run:
-        logger.info("Executing DRY-RUN validation mode...")
+        logger.info("Executing DRY-RUN validation mode (3 rounds)...")
         timesteps = 16
-        eval_rounds = 2
+        eval_rounds = 3
     else:
         timesteps = args.timesteps
         eval_rounds = args.eval_rounds

@@ -160,12 +160,12 @@ class ClientTelemetry:
         input_variance : Optional[float]
             Updated input variance (if changed).
         """
-        self.latest_loss = float(local_loss)
-        self.latest_latency = float(latency)
+        self.latest_loss = float(np.nan_to_num(local_loss, nan=1.0, posinf=5.0, neginf=0.0))
+        self.latest_latency = float(np.nan_to_num(latency, nan=0.5, posinf=10.0, neginf=0.0))
         if input_variance is not None:
-            self.input_variance = float(input_variance)
+            self.input_variance = float(np.nan_to_num(input_variance, nan=1.0, posinf=2.0, neginf=0.0))
         if bandwidth is not None:
-            self.latest_bandwidth = float(bandwidth)
+            self.latest_bandwidth = float(np.nan_to_num(bandwidth, nan=5.0, posinf=10.0, neginf=1.0))
 
         self.loss_history.append(self.latest_loss)
         self.latency_history.append(self.latest_latency)
@@ -186,11 +186,15 @@ class ClientTelemetry:
             l_t = self.loss_history[-1]
             l_t_minus_1 = self.loss_history[-2]
             l_t_minus_2 = self.loss_history[-3]
-            return float(abs(l_t - 2.0 * l_t_minus_1 + l_t_minus_2))
+            val = abs(l_t - 2.0 * l_t_minus_1 + l_t_minus_2)
         elif n == 2:
-            return float(abs(self.loss_history[-1] - self.loss_history[-2]))
+            val = abs(self.loss_history[-1] - self.loss_history[-2])
         else:
+            val = 0.0
+
+        if np.isnan(val) or np.isinf(val):
             return 0.0
+        return float(val)
 
     def get_state_vector(self, normalize: bool = True) -> np.ndarray:
         """
@@ -209,11 +213,11 @@ class ClientTelemetry:
         """
         raw = np.array(
             [
-                self.latest_loss,
-                self.input_variance,
-                self.latest_latency,
-                self.latest_bandwidth,
-                self.latest_curvature,
+                float(np.nan_to_num(self.latest_loss, nan=1.0, posinf=5.0, neginf=0.0)),
+                float(np.nan_to_num(self.input_variance, nan=1.0, posinf=2.0, neginf=0.0)),
+                float(np.nan_to_num(self.latest_latency, nan=0.5, posinf=10.0, neginf=0.0)),
+                float(np.nan_to_num(self.latest_bandwidth, nan=5.0, posinf=10.0, neginf=1.0)),
+                float(np.nan_to_num(self.latest_curvature, nan=0.0, posinf=2.0, neginf=0.0)),
             ],
             dtype=np.float32,
         )
@@ -222,26 +226,40 @@ class ClientTelemetry:
             return raw
 
         b = self.bounds
-        # Safe normalization to [0.0, 1.0] with clipping
-        norm_loss = np.clip(raw[0] / max(1e-6, b["loss_max"]), 0.0, 1.0)
-        norm_var = np.clip(raw[1] / max(1e-6, b["variance_max"]), 0.0, 1.0)
-        norm_lat = np.clip(raw[2] / max(1e-6, b["latency_max"]), 0.0, 1.0)
+        # Safe min-max normalization to [0.0, 1.0] with clipping
+        loss_min = float(b.get("loss_min", 0.0))
+        loss_max = float(b.get("loss_max", 5.0))
+        norm_loss = np.clip((raw[0] - loss_min) / max(1e-6, loss_max - loss_min), 0.0, 1.0)
 
-        bw_range = max(1e-6, b["bandwidth_max"] - b["bandwidth_min"])
-        norm_bw = np.clip((raw[3] - b["bandwidth_min"]) / bw_range, 0.0, 1.0)
+        var_min = float(b.get("variance_min", 0.0))
+        var_max = float(b.get("variance_max", 2.0))
+        norm_var = np.clip((raw[1] - var_min) / max(1e-6, var_max - var_min), 0.0, 1.0)
 
-        norm_curv = np.clip(raw[4] / max(1e-6, b["curvature_max"]), 0.0, 1.0)
+        lat_min = float(b.get("latency_min", 0.0))
+        lat_max = float(b.get("latency_max", 10.0))
+        norm_lat = np.clip((raw[2] - lat_min) / max(1e-6, lat_max - lat_min), 0.0, 1.0)
 
-        return np.array([norm_loss, norm_var, norm_lat, norm_bw, norm_curv], dtype=np.float32)
+        bw_min = float(b.get("bandwidth_min", 1.0))
+        bw_max = float(b.get("bandwidth_max", 10.0))
+        norm_bw = np.clip((raw[3] - bw_min) / max(1e-6, bw_max - bw_min), 0.0, 1.0)
+
+        curv_min = float(b.get("curvature_min", 0.0))
+        curv_max = float(b.get("curvature_max", 2.0))
+        norm_curv = np.clip((raw[4] - curv_min) / max(1e-6, curv_max - curv_min), 0.0, 1.0)
+
+        out = np.array([norm_loss, norm_var, norm_lat, norm_bw, norm_curv], dtype=np.float32)
+        return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
 
     def reset(self, initial_loss: float = 1.0, initial_bandwidth: float = 5.0) -> None:
         """Reset history and telemetry state."""
-        self.loss_history.clear()
-        self.latency_history.clear()
-        self.bandwidth_history.clear()
-        self.latest_loss = float(initial_loss)
+        init_loss = float(np.nan_to_num(initial_loss, nan=1.0, posinf=5.0, neginf=0.0))
+        init_bw = float(np.nan_to_num(initial_bandwidth, nan=5.0, posinf=10.0, neginf=1.0))
+        self.loss_history = [init_loss]
+        self.latency_history = [0.5]
+        self.bandwidth_history = [init_bw]
+        self.latest_loss = init_loss
         self.latest_latency = 0.5
-        self.latest_bandwidth = float(initial_bandwidth)
+        self.latest_bandwidth = init_bw
         self.latest_curvature = 0.0
 
 
@@ -413,7 +431,7 @@ class TelemetryTracker:
         matrix = np.zeros((self.num_clients, 5), dtype=np.float32)
         for idx, cid in enumerate(self.client_ids):
             matrix[idx] = self.clients[cid].get_state_vector(normalize=normalize)
-        return matrix
+        return np.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=0.0)
 
     def get_client_state(self, client_id: Union[int, str], normalize: bool = True) -> np.ndarray:
         """Get 5-dimensional state vector for a single client."""

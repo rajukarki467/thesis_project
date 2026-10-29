@@ -34,6 +34,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.federated.client import FlowerECGClient
+from src.models.fastkan_model import project_spline_weights
 from src.utils.metrics import compute_metrics
 
 logger = logging.getLogger("federated_server")
@@ -134,20 +135,73 @@ class CentralizedEvaluator:
 
 def aggregate_parameters(
     client_results: Sequence[Tuple[List[np.ndarray], int]],
+    canonical_gk: Optional[Tuple[int, int]] = (5, 3),
+    grid_range: float = 1.0,
 ) -> List[np.ndarray]:
     """
-    Weighted FedAvg aggregation of client model parameters:
+    Weighted FedAvg aggregation of client model parameters with support for
+    heterogeneous (G_i, k_i) spline edge parameters:
         theta_{t+1} = sum_k (n_k / sum_j n_j) * theta_k
+
+    When clients have heterogeneous grid sizes G_i or spline orders k_i,
+    their spline coefficients are projected onto a canonical global reference
+    grid (default canonical_gk=(5, 3)) via uniform sample evaluation and
+    least-squares spline projection. Naive zero-padding is strictly eliminated
+    to prevent coefficient dilution and accuracy degradation.
+
+    When all clients share identical parameter shapes (fixed G, k), aggregation
+    exactly equals standard FedAvg without precision loss.
     """
     total_samples = sum(num_samples for _, num_samples in client_results)
     if total_samples == 0:
         raise ValueError("Cannot aggregate: total client samples is 0.")
 
-    # Initialize aggregated weights with zeros matching layer shapes
-    first_params = client_results[0][0]
-    aggregated = [np.zeros_like(p, dtype=np.float64) for p in first_params]
+    num_layers = len(client_results[0][0])
 
+    # Check if any parameter tensor has differing shapes across clients
+    has_shape_mismatch = any(
+        any(params[i].shape != client_results[0][0][i].shape for params, _ in client_results)
+        for i in range(num_layers)
+    )
+
+    # Fast path: If all shapes match, perform standard FedAvg directly
+    if not has_shape_mismatch:
+        first_params = client_results[0][0]
+        aggregated = [np.zeros_like(p, dtype=np.float64) for p in first_params]
+        for params, n_samples in client_results:
+            weight = float(n_samples) / float(total_samples)
+            for i, p in enumerate(params):
+                aggregated[i] += weight * p.astype(np.float64)
+        return [p.astype(first_params[i].dtype) for i, p in enumerate(aggregated)]
+
+    # Heterogeneous path: Project spline weights to canonical global reference grid
+    target_gk = canonical_gk if canonical_gk is not None else (5, 3)
+    target_bases = target_gk[0] + target_gk[1]
+
+    num_bases_to_gk = {
+        5: (3, 2), 6: (3, 3), 7: (5, 2), 8: (5, 3), 9: (7, 2),
+        10: (7, 3), 11: (7, 4), 12: (10, 2), 13: (10, 3), 14: (10, 4),
+        32: (30, 2),
+    }
+
+    projected_clients: List[Tuple[List[np.ndarray], int]] = []
     for params, n_samples in client_results:
+        proj_params = []
+        for p in params:
+            if p.ndim == 3 and p.shape[-1] != target_bases:
+                src_bases = p.shape[-1]
+                src_gk = num_bases_to_gk.get(src_bases, (max(3, src_bases - 3), 3))
+                p_proj = project_spline_weights(
+                    p, src_gk=src_gk, dst_gk=target_gk, grid_range=grid_range
+                )
+                proj_params.append(p_proj)
+            else:
+                proj_params.append(p)
+        projected_clients.append((proj_params, n_samples))
+
+    first_params = projected_clients[0][0]
+    aggregated = [np.zeros_like(p, dtype=np.float64) for p in first_params]
+    for params, n_samples in projected_clients:
         weight = float(n_samples) / float(total_samples)
         for i, p in enumerate(params):
             aggregated[i] += weight * p.astype(np.float64)

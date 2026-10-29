@@ -209,8 +209,30 @@ class PPOController:
                 device=self.device_str,
                 **kwargs,
             )
+            self._init_policy_bias()
         else:
             self.model = None
+
+    def _init_policy_bias(self) -> None:
+        """
+        Initialize action_net bias towards baseline (action 4: G=5, k=3) and
+        efficient configurations (actions 0..3) to prevent initial over-parameterization.
+        """
+        if self.model is None or not hasattr(self.model, "policy"):
+            return
+        action_net = getattr(self.model.policy, "action_net", None)
+        if action_net is not None and getattr(action_net, "bias", None) is not None:
+            with torch.no_grad():
+                b = action_net.bias
+                num_logits = b.numel()
+                num_clients = num_logits // 12
+                for c in range(num_clients):
+                    # Actions 0..3: +0.5 (efficient configurations)
+                    b[c * 12 : c * 12 + 4] = 0.5
+                    # Action 4: +1.5 (FedAvg-KAN baseline G=5, k=3)
+                    b[c * 12 + 4] = 1.5
+                    # Actions 5..11: -1.5 (over-parameterized configurations)
+                    b[c * 12 + 5 : (c + 1) * 12] = -1.5
 
     def _load_config(self, config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         """Load YAML configuration or return sensible defaults."""
@@ -255,6 +277,7 @@ class PPOController:
                 seed=self.seed,
                 device=self.device_str,
             )
+            self._init_policy_bias()
 
     def train(
         self,

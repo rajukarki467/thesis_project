@@ -147,7 +147,7 @@ class FederatedKANEnv(gym.Env):
         self.alpha = float(alpha if alpha is not None else env_cfg.get("alpha", 0.5))
         self.global_seed = int(seed if seed is not None else env_cfg.get("seed", 42))
 
-        # Reward hyperparameters (Equation 7)
+        # Reward hyperparameters (Calibrated Normalized Equation 7)
         if normalize_params is not None:
             self.normalize_params = bool(normalize_params)
         else:
@@ -161,11 +161,25 @@ class FederatedKANEnv(gym.Env):
         else:
             self.baseline_budget = float(self.num_clients * ref_params_per_client)
 
-        default_lambda1 = 0.20 if self.normalize_params else 1.0e-6
-        self.lambda1 = float(lambda1 if lambda1 is not None else reward_cfg.get("lambda1", default_lambda1))
-        self.lambda2 = float(lambda2 if lambda2 is not None else reward_cfg.get("lambda2", 0.005))
+        self.scale_acc = float(reward_cfg.get("scale_acc", 100.0))
+        if lambda1 is not None:
+            self.beta1 = float(lambda1)
+        else:
+            self.beta1 = float(reward_cfg.get("beta1", reward_cfg.get("lambda1", 1.5)))
+
+        if lambda2 is not None:
+            self.beta2 = float(lambda2)
+        else:
+            self.beta2 = float(reward_cfg.get("beta2", reward_cfg.get("lambda2", 0.1)))
+
+        self.beta3 = float(reward_cfg.get("beta3", 0.02))
+        self.lambda1 = self.beta1
+        self.lambda2 = self.beta2
+        self.baseline_latency = float(reward_cfg.get("baseline_latency", 0.5))
+        self.reward_clip_min = float(reward_cfg.get("reward_clip_min", -5.0))
+        self.reward_clip_max = float(reward_cfg.get("reward_clip_max", 5.0))
+        self.delta_clip = float(reward_cfg.get("delta_clip", 0.04))
         self.accuracy_metric = reward_cfg.get("accuracy_metric", "accuracy")
-        self.delta_clip = float(reward_cfg.get("delta_clip", 0.15))
 
         # Federated training hyperparameters
         self.local_epochs = int(fed_cfg.get("local_epochs", 1))
@@ -245,6 +259,7 @@ class FederatedKANEnv(gym.Env):
         self.server_parameters: List[np.ndarray] = []
         self.client_models: Dict[int, FastKANClassifier] = {}
         self.clients: Dict[int, FlowerECGClient] = {}
+        self.prev_actions: Optional[np.ndarray] = None
 
     def _load_config(self, config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         """Load YAML configuration or return sensible defaults."""
@@ -404,6 +419,10 @@ class FederatedKANEnv(gym.Env):
             initial_losses=float(init_loss), seed=seed
         )
 
+        # Initialize previous actions for action smoothness regularization: - β3 * ||a_t - a_{t-1}||_1
+        base_act = gk_to_action(self.ref_grid_size, self.ref_spline_order)
+        self.prev_actions = np.full(self.num_clients, base_act, dtype=np.int64)
+
         info = {
             "round": 0,
             "global_accuracy": self.acc_prev,
@@ -504,34 +523,48 @@ class FederatedKANEnv(gym.Env):
             client_updates.append((resampled_params, n_samples))
 
         # 2. Server Aggregation (Weighted FedAvg on Reference Grid)
-        self.server_parameters = aggregate_parameters(client_updates)
+        self.server_parameters = aggregate_parameters(
+            client_updates, canonical_gk=(self.ref_grid_size, self.ref_spline_order)
+        )
 
         # 3. Global Evaluation on Held-out Patient Data
         test_loss, test_metrics = self.evaluator.evaluate(self.server_parameters)
         acc_curr = float(test_metrics.get("accuracy", 0.0))
         f1_curr = float(test_metrics.get("macro_f1", 0.0))
 
-        # 4. Multi-Objective Reward Calculation (Equation 7)
-        # R_t = ΔAcc_global - λ1 * P_cost - λ2 * Σ Δτ_i^t
+        # 4. Multi-Objective Reward Calculation (Calibrated Dimensionless Formulation)
+        # R_t = 100.0 * (Acc_t - Acc_{t-1}) - β1 * (Mean_Params_t / Baseline_Params) - β2 * (Mean_Latency_t / Baseline_Latency) - β3 * ||a_t - a_{t-1}||_1
         delta_acc = float(acc_curr - self.acc_prev)
         # Safe clipping for numerical gradient stability
         delta_acc_clipped = float(np.clip(delta_acc, -self.delta_clip, self.delta_clip))
+        acc_term = float(self.scale_acc * delta_acc_clipped)
 
         sum_params = float(sum(client_params_list))
         sum_latency = float(sum(client_latencies_list))
+        mean_params = float(np.mean(client_params_list))
+        mean_latency = float(np.mean(client_latencies_list))
 
-        if self.normalize_params and self.baseline_budget > 0:
-            relative_param_cost = float((sum_params - self.baseline_budget) / self.baseline_budget)
-            param_penalty = float(self.lambda1 * relative_param_cost)
+        # Normalized parameter penalty: Choosing configurations above 42,792 incurs an immediate negative penalty
+        relative_param_cost = float((sum_params - self.baseline_budget) / self.baseline_budget) if self.baseline_budget > 0 else 0.0
+        if relative_param_cost > 0:
+            param_penalty = float(self.beta1 * relative_param_cost * 1.5)  # Immediate negative penalty for over-parameterization
         else:
-            relative_param_cost = float(sum_params / self.baseline_budget) if self.baseline_budget > 0 else 0.0
-            param_penalty = float(self.lambda1 * sum_params)
+            param_penalty = float(self.beta1 * relative_param_cost)  # Compression incentive when below baseline
 
-        latency_penalty = float(self.lambda2 * sum_latency)
+        latency_penalty = float(self.beta2 * (mean_latency / max(1e-6, self.baseline_latency)))
 
-        reward = float(delta_acc_clipped - param_penalty - latency_penalty)
+        # Action smoothness regularization: - β3 * ||a_t - a_{t-1}||_1
+        if self.prev_actions is None:
+            base_act = gk_to_action(self.ref_grid_size, self.ref_spline_order)
+            self.prev_actions = np.full(self.num_clients, base_act, dtype=np.int64)
+        smoothness_norm = float(np.sum(np.abs(actions - self.prev_actions)))
+        smoothness_penalty = float(self.beta3 * smoothness_norm)
 
-        # Update previous accuracy for next step
+        raw_reward = float(acc_term - param_penalty - latency_penalty - smoothness_penalty)
+        reward = float(np.clip(raw_reward, self.reward_clip_min, self.reward_clip_max))
+
+        # Update previous actions, accuracy, and round counter
+        self.prev_actions = actions.copy()
         self.acc_prev = acc_curr
         self.f1_prev = f1_curr
         self.current_round = round_num
@@ -561,11 +594,16 @@ class FederatedKANEnv(gym.Env):
             "total_latency": sum_latency,
             "mean_latency": float(np.mean(client_latencies_list)),
             "reward_components": {
-                "delta_accuracy": delta_acc_clipped,
+                "acc_term": acc_term,
+                "delta_accuracy": acc_term - smoothness_penalty,
+                "raw_delta_acc": delta_acc,
+                "delta_acc_clipped": delta_acc_clipped,
                 "param_penalty": param_penalty,
                 "relative_param_cost": relative_param_cost,
                 "parameter_savings_pct": savings_pct,
                 "latency_penalty": latency_penalty,
+                "smoothness_penalty": smoothness_penalty,
+                "raw_reward": raw_reward,
                 "total_reward": reward,
             },
             "actions": [

@@ -32,15 +32,24 @@ actions:
   spline_orders: [2, 3, 4]     # Spline polynomial degree k
   num_actions_per_client: 12   # 4 x 3 = 12 discrete configurations
 
-# Multi-Objective Reward: R_t = ΔAcc_global - λ1 * ((Σ Params - B_ref) / B_ref) - λ2 * Σ Δτ_i^t (Eq. 7 normalized)
+# Multi-Objective Calibrated Reward:
+# R_t = 100.0 * (Acc_t - Acc_{t-1}) - β1 * (Mean_Params_t / Baseline_Params) - β2 * (Mean_Latency_t / Baseline_Latency) - β3 * ||a_t - a_{t-1}||_1
 reward:
   accuracy_metric: "accuracy"  # "accuracy" or "macro_f1"
-  lambda1: 0.20                # Normalized parameter scaling penalty (~0.20 * ΔP / B_ref)
-  lambda2: 0.005               # Scaling penalty for total client latency (~2.0s -> ~0.01 penalty)
-  delta_clip: 0.15             # Clip delta accuracy to [-delta_clip, delta_clip] for value network stability
-  normalize_params: true       # Normalize parameter count against reference baseline budget
-  baseline_budget: 42792.0     # Reference baseline budget (8 clients * 5349 params)
+  scale_acc: 100.0             # Dimensionless scaling factor for delta accuracy: 100.0 * (Acc_t - Acc_{t-1})
+  beta1: 1.5                   # Normalized parameter penalty coefficient
+  beta2: 0.1                   # Normalized latency penalty coefficient
+  beta3: 0.02                  # Action smoothness regularization coefficient: - β3 * ||a_t - a_{t-1}||_1
+  delta_clip: 0.04             # Clip delta accuracy to [-0.04, 0.04] for stable value estimation
+  reward_clip_min: -5.0        # Bound R_t in [-5.0, 5.0]
+  reward_clip_max: 5.0
+  baseline_params: 42792.0     # Reference baseline parameters (8 clients * 5349 params for G=5, k=3)
+  baseline_budget: 42792.0     # Fleet reference baseline budget
   baseline_params_per_client: 5349.0
+  baseline_latency: 0.5        # Baseline client step latency (seconds)
+  normalize_params: true       # Center parameter cost around baseline budget
+  lambda1: 1.5                 # Compatibility alias for beta1
+  lambda2: 0.1                 # Compatibility alias for beta2
 
 # Heuristic Fallback Controller Configuration (Section 4.2)
 heuristic:
