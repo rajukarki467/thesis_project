@@ -7,7 +7,7 @@
 [![Flower](https://img.shields.io/badge/Flower-1.7.0-yellow.svg)](https://flower.ai/)
 [![WFDB](https://img.shields.io/badge/WFDB-4.3.1-brightgreen.svg)](https://physionet.org/about/software/)
 [![Dataset](https://img.shields.io/badge/Dataset-MIT--BIH%20Arrhythmia-orange.svg)](https://physionet.org/content/mitdb/1.0.0/)
-[![Tests](https://img.shields.io/badge/Tests-25%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-31%20Passing-success.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 An end-to-end research framework implementing **Resource-Adaptive Federated Kolmogorov-Arnold Networks (FedKAN)** for heartbeat arrhythmia classification on the **MIT-BIH Arrhythmia Database**, strictly following the **ANSI/AAMI EC57** international standard.
@@ -58,12 +58,14 @@ The framework integrates:
     - [Interactive Jupyter Notebooks](#interactive-jupyter-notebooks)
     - [Key Scientific Insights](#key-scientific-insights)
     - [Artifacts & Experiment Outputs Index](#artifacts--experiment-outputs-index)
-11. [Verification & Diagnostic Visualizations (EDA)](#verification--diagnostic-visualizations-eda)
-12. [Installation & Setup](#installation--setup)
-13. [CLI Reproduction Guide](#cli-reproduction-guide)
-14. [Dataset Statistics](#dataset-statistics)
-15. [Project Roadmap & Completed Milestones](#project-roadmap--completed-milestones)
-16. [References](#references)
+11. [Performance vs. Communication Cost Evaluation (Figures C1–C8 & Table)](#performance-vs-communication-cost-evaluation-figures-c1c8--benchmark-table)
+12. [Diagnostic Analysis & Root Cause Findings (Hypotheses H1–H6)](#diagnostic-analysis--root-cause-findings-hypotheses-h1h6)
+13. [Verification & Diagnostic Visualizations (EDA)](#verification--diagnostic-visualizations-eda)
+14. [Installation & Setup](#installation--setup)
+15. [CLI Reproduction Guide](#cli-reproduction-guide)
+16. [Dataset Statistics](#dataset-statistics)
+17. [Project Roadmap & Completed Milestones](#project-roadmap--completed-milestones)
+18. [References](#references)
 
 ---
 
@@ -539,6 +541,10 @@ All evaluation metrics, checkpoints, and diagnostic figures are systematically o
 results/
 ├── ablations/
 │   ├── ablation_summary.csv           # Master metrics across all 5 models & 3 alphas
+│   ├── comm_round_traces.csv          # Standardized 19-column traces across 120 simulations
+│   ├── comm_vs_performance.csv        # Comprehensive performance-vs-communication evaluation CSV
+│   ├── comm_vs_performance.md         # Formatted GitHub Markdown evaluation table
+│   ├── comm_vs_performance.tex        # LaTeX booktabs table for thesis submission
 │   ├── non_iid_robustness.csv         # Degradation rate analysis table
 │   ├── reward_sensitivity.csv         # 9-point (lambda1, lambda2) grid sweep data
 │   ├── table_4_1_benchmark.md         # GitHub-flavored Markdown Table 4.1
@@ -559,6 +565,16 @@ results/
 │   ├── metrics_*_alpha_*.csv          # Round-by-round metrics per baseline and alpha
 │   └── summary_*_alpha_*.json         # Summary JSONs per baseline and alpha
 └── figures/
+    ├── comm/                          # Performance vs. Communication Cost Suite (C1–C8)
+    │   ├── fig_c1_acc_vs_cum_comm.png / .pdf
+    │   ├── fig_c2_f1_vs_cum_comm.png / .pdf
+    │   ├── fig_c3_pareto_scatter.png / .pdf
+    │   ├── fig_c4_small_multiples.png / .pdf
+    │   ├── fig_c5_comm_to_target_acc.png / .pdf
+    │   ├── fig_c6_comm_breakdown.png / .pdf
+    │   ├── fig_c7_acc_vs_comm_time.png / .pdf
+    │   ├── fig_c8_savings_summary.png / .pdf
+    │   └── per_method/                # Individual per-method standalone convergence plots
     ├── fig4_1_pareto_frontier.png / .pdf
     ├── fig4_2_spline_interpretability.png / .pdf
     ├── fig4_3_classwise_f1.png / .pdf
@@ -569,6 +585,85 @@ logs/
 └── ppo/
     └── ppo_training_log.csv           # Episode rewards, lengths, and loss telemetry
 ```
+
+---
+
+## Performance vs. Communication Cost Evaluation (Figures C1–C8 & Benchmark Table)
+
+To rigorously evaluate communication efficiency against predictive performance, all 8 methods were evaluated across Dirichlet non-IID partitions ($\alpha \in \{0.1, 0.5, 1.0\}$) using 5 distinct random seeds (42–46) over 10 communication rounds with zero test-set leakage:
+1. `FedAvg-MLP`: Parameter-matched standard baseline ($5,351$ params/client)
+2. `FedAvg-KAN (fixed 5,3)`: Canonical uniform architecture reference ($5,349$ params/client, $42,792$ params/round)
+3. `FedProx-KAN`: Proximal regularization ($\mu=0.01$) on canonical grid
+4. `Heuristic-KAN`: Quantile-based deterministic rule controller
+5. `PPO-Adaptive-KAN`: Closed-loop reinforcement learning meta-controller (**Ours**)
+6. `Uniform-Fleet-(3,2)`: Coarse lower-bound reference fleet ($3,573$ params/client, $28,584$ params/round)
+7. `Uniform-Fleet-(10,4)`: Fine upper-bound reference fleet ($8,901$ params/client, $71,208$ params/round)
+8. `Random-config KAN`: Dynamic stochastic configuration baseline
+
+### Benchmark Table: Communication Cost vs. Predictive Performance
+(Generated from `results/ablations/comm_vs_performance.md`, 5-seed mean $\pm$ std across 10 rounds)
+
+| $\alpha$ | Method | Test Acc (%) | Macro F1 (%) | Balanced Acc (%) | Uplink Params / Round | Total Comm (MB) | Savings vs (5,3) | Savings vs (10,4) | Comm to 80% Acc |
+|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **0.1** | **FedAvg-MLP** | 73.96 ± 5.07 | 24.39 ± 6.87 | 26.03 ± 5.25 | 42,808 | 3.27 ± 0.00 | -0.0% | +39.9% | Not Reached |
+| | **FedAvg-KAN (fixed 5,3)** | 81.75 ± 8.08 | 33.79 ± 11.34 | 34.09 ± 9.47 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 3.0 rds (0.98 MB) |
+| | **FedProx-KAN** | 82.14 ± 6.02 | 35.17 ± 8.78 | 34.93 ± 8.13 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 3.0 rds (0.98 MB) |
+| | **Heuristic-KAN** | 82.23 ± 8.14 | 34.45 ± 11.41 | 34.40 ± 9.61 | 46,344 | 3.54 ± 0.00 | -8.3% | +34.9% | 3.0 rds (1.06 MB) |
+| | **PPO-Adaptive-KAN (Ours)** | **81.52 ± 7.81** | **33.20 ± 10.69** | **33.29 ± 8.71** | **29,768** | **2.27 ± 0.00** | **+30.4%** | **+58.2%** | **4.0 rds (0.91 MB)** |
+| | **Uniform-Fleet-(3,2)** | 81.98 ± 8.34 | 33.82 ± 11.76 | 34.01 ± 9.75 | 28,584 | 2.18 ± 0.00 | +33.2% | +59.9% | 3.0 rds (0.65 MB) |
+| | **Uniform-Fleet-(10,4)** | 81.09 ± 8.48 | 33.06 ± 11.69 | 33.36 ± 9.93 | 71,208 | 5.43 ± 0.00 | -66.4% | +0.0% | 3.0 rds (1.63 MB) |
+| | **Random-config KAN** | 81.66 ± 8.26 | 33.56 ± 11.49 | 33.78 ± 9.58 | 48,748 | 3.72 ± 0.12 | -13.9% | +31.5% | 3.0 rds (1.10 MB) |
+| **0.5** | **FedAvg-MLP** | 76.51 ± 1.41 | 34.61 ± 1.91 | 37.89 ± 3.37 | 42,808 | 3.27 ± 0.00 | -0.0% | +39.9% | Not Reached |
+| | **FedAvg-KAN (fixed 5,3)** | 85.95 ± 2.70 | 46.67 ± 2.08 | 46.56 ± 3.13 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 1.0 rds (0.33 MB) |
+| | **FedProx-KAN** | 85.09 ± 2.26 | 46.57 ± 1.91 | 46.15 ± 2.48 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 2.0 rds (0.65 MB) |
+| | **Heuristic-KAN** | 85.55 ± 2.24 | 46.76 ± 1.41 | 46.91 ± 2.42 | 46,344 | 3.54 ± 0.00 | -8.3% | +34.9% | 1.0 rds (0.35 MB) |
+| | **PPO-Adaptive-KAN (Ours)** | **83.54 ± 2.53** | **45.33 ± 2.10** | **46.32 ± 2.59** | **29,768** | **2.27 ± 0.00** | **+30.4%** | **+58.2%** | **1.0 rds (0.23 MB)** |
+| | **Uniform-Fleet-(3,2)** | 85.15 ± 2.41 | 46.23 ± 1.75 | 46.40 ± 3.06 | 28,584 | 2.18 ± 0.00 | +33.2% | +59.9% | 1.0 rds (0.22 MB) |
+| | **Uniform-Fleet-(10,4)** | 84.97 ± 2.14 | 46.56 ± 1.59 | 47.02 ± 1.72 | 71,208 | 5.43 ± 0.00 | -66.4% | +0.0% | 1.0 rds (0.54 MB) |
+| | **Random-config KAN** | 85.36 ± 2.04 | 46.63 ± 1.32 | 47.14 ± 2.14 | 48,748 | 3.72 ± 0.12 | -13.9% | +31.5% | 1.0 rds (0.36 MB) |
+| **1.0** | **FedAvg-MLP** | 75.35 ± 0.99 | 33.66 ± 2.13 | 39.45 ± 2.54 | 42,808 | 3.27 ± 0.00 | -0.0% | +39.9% | Not Reached |
+| | **FedAvg-KAN (fixed 5,3)** | 81.60 ± 2.95 | 45.46 ± 2.02 | 47.24 ± 2.87 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 2.0 rds (0.65 MB) |
+| | **FedProx-KAN** | 81.54 ± 2.64 | 44.56 ± 2.17 | 46.01 ± 3.43 | 42,792 | 3.26 ± 0.00 | +0.0% | +39.9% | 3.0 rds (0.98 MB) |
+| | **Heuristic-KAN** | 80.99 ± 2.84 | 44.95 ± 1.78 | 46.87 ± 2.80 | 46,344 | 3.54 ± 0.00 | -8.3% | +34.9% | 2.0 rds (0.71 MB) |
+| | **PPO-Adaptive-KAN (Ours)** | **79.50 ± 2.65** | **42.50 ± 1.63** | **44.36 ± 1.83** | **29,768** | **2.27 ± 0.00** | **+30.4%** | **+58.2%** | **4.0 rds (0.91 MB)** |
+| | **Uniform-Fleet-(3,2)** | 80.46 ± 2.68 | 43.83 ± 1.64 | 45.92 ± 2.28 | 28,584 | 2.18 ± 0.00 | +33.2% | +59.9% | 3.0 rds (0.65 MB) |
+| | **Uniform-Fleet-(10,4)** | 82.83 ± 2.70 | 46.31 ± 1.68 | 48.16 ± 2.80 | 71,208 | 5.43 ± 0.00 | -66.4% | +0.0% | 2.0 rds (1.09 MB) |
+| | **Random-config KAN** | 81.60 ± 3.09 | 45.54 ± 1.89 | 47.08 ± 2.91 | 48,748 | 3.72 ± 0.12 | -13.9% | +31.5% | 2.0 rds (0.74 MB) |
+
+### Figure Suite Overview (`results/figures/comm/`)
+All figures are published in both **300 DPI PNG** and **Vector PDF**:
+
+- **Fig C1 (`fig_c1_acc_vs_cum_comm`)**: Test accuracy convergence trajectories vs. cumulative transmitted MB across $\alpha \in \{0.1, 0.5, 1.0\}$ with shaded $\pm \text{std}$ error bands.
+- **Fig C2 (`fig_c2_f1_vs_cum_comm`)**: AAMI EC57 macro F1-score and balanced accuracy convergence vs. cumulative communication.
+- **Fig C3 (`fig_c3_pareto_scatter`)**: Empirical Pareto frontiers connecting non-dominated methods in (Communication, Accuracy) and (Communication, Macro F1) coordinate spaces.
+- **Fig C4 (`fig_c4_small_multiples`)**: Dual-axis convergence multiples for each method across skew levels, plus standalone plots in `results/figures/comm/per_method/`.
+- **Fig C5 (`fig_c5_comm_to_target_acc`)**: Cumulative MB required to reach diagnostic accuracy thresholds ($70\%, 75\%, 80\%, 85\%$) with hatched bars for non-convergent models.
+- **Fig C6 (`fig_c6_comm_breakdown`)**: Uplink/Downlink parameter volume breakdown per round and client $(G, k)$ configuration selection area charts for PPO and Heuristic controllers.
+- **Fig C7 (`fig_c7_acc_vs_comm_time`)**: Test accuracy vs. cumulative edge network transmission latency under simulated $1.0 - 10.0\text{ Mbps}$ bandwidth.
+- **Fig C8 (`fig_c8_savings_summary`)**: Grouped communication savings comparison relative to Fixed (5,3), Fine (10,4), and Coarse (3,2) reference fleets.
+
+### CLI Reproduction
+```bash
+# Generate all performance-vs-communication figures (C1-C8) and Markdown/LaTeX tables:
+python3 experiments/run_ablation.py --comm_figures
+```
+
+---
+
+## Diagnostic Analysis & Root Cause Findings (Hypotheses H1–H6)
+
+During initial benchmarking, an observed anomaly was identified where adaptive controllers suffered accuracy degradation compared to the fixed canonical model ($G=5, k=3$), while simultaneously consuming higher parameters per round (49k–50k vs. 42,792 reference). A comprehensive hypothesis-driven diagnostic campaign was executed to isolate and resolve each root cause:
+
+| Hypothesis | Theory Tested | Diagnostic Verification | Empirical Verdict & Resolution |
+| :--- | :--- | :--- | :--- |
+| **H1: Spline Projection Error** | Lossy B-spline projection between canonical $(5,3)$ server and heterogeneous client $(G, k)$ grids injects aggregation noise. | Uniform fleet projection tests and round-trip relative $L_2$ function error on trained checkpoints ($<1.8\%$). | **PARTIALLY SUPPORTED**: Round-trip error on weights is modest, but repeatedly projecting full weights under non-IID SGD drift introduces cumulative error. **Fix**: Implemented `project_delta` mode where clients transmit local weight deltas projected back to the canonical grid. |
+| **H2: PPO Undertraining** | 200 RL timesteps was insufficient, causing the policy to remain near the uncalibrated initial prior. | Evaluated policy entropy and action variance across 200 vs. 2,000+ timesteps. | **CONFIRMED**: 200 timesteps left the policy near random exploration. **Fix**: Extended training duration and implemented entropy bonus decay for reliable policy convergence. |
+| **H3: Reward Leakage & Transient** | Using test split accuracy in the reward function risks evaluation leakage; $\Delta \text{Acc}$ is dominated by initial round transients. | Audited reward evaluation pipeline and test set usage. | **CONFIRMED & FIXED**: The reward function was strictly decoupled from the 8-patient test split. $\Delta \text{Acc}$ is now computed exclusively on the 7-patient validation split (`val_acc`), guaranteeing zero leakage. |
+| **H4: High-Frequency Config Switching** | Changing client $(G, k)$ configurations every round destabilizes local momentum and optimizer states. | Evaluated sticky configuration intervals $K \in \{1, 3, 5\}$ and fixed-random configurations. | **CONFIRMED**: Frequent architectural transitions reset spline basis geometry before convergence. **Fix**: Sticky-action variant (`sticky_k_rounds`) stabilizes training trajectories. |
+| **H5: Protocol Asymmetry & Variance** | Baselines ran 3 rounds while adaptive ran 10 rounds; single-seed evaluation failed to capture partition variance. | Evaluated multi-seed stability across seeds 42–46 under standardized 10-round training. | **CONFIRMED**: Standardized all 8 methods to identical rounds (10), identical optimizer hyperparameters, and identical 5 random seeds (42–46). |
+| **H6: Asymmetric Budget Penalty Insufficiency** | Multi-objective reward lacked a hard penalty for exceeding canonical fleet budget ($42,792$), causing drift to $(10,4)$. | Monitored fleet parameter selection over time under linear vs. asymmetric budget penalties. | **CONFIRMED & FIXED**: Formulated asymmetric penalty with hard scaling for fleet parameters exceeding $B_{\text{ref}} = 42,792$. Successfully compressed PPO parameter volume down to $29,768$ params/round (+30.4% savings). |
+
+---
 
 ---
 

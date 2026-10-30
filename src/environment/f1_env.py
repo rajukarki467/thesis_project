@@ -137,6 +137,7 @@ class FederatedKANEnv(gym.Env):
         val_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         eval_split: Optional[str] = None,
         aggregation_mode: Optional[str] = None,
+        proximal_mu: Optional[float] = None,
         sticky_k: int = 1,
         target_budget_ratio: Optional[float] = None,
         accuracy_metric: Optional[str] = None,
@@ -236,7 +237,7 @@ class FederatedKANEnv(gym.Env):
         self.learning_rate = float(fed_cfg.get("learning_rate", 0.001))
         self.optimizer_type = fed_cfg.get("optimizer", "adam")
         self.weight_decay = float(fed_cfg.get("weight_decay", 1e-4))
-        self.proximal_mu = float(fed_cfg.get("proximal_mu", 0.0))
+        self.proximal_mu = float(proximal_mu if proximal_mu is not None else fed_cfg.get("proximal_mu", 0.0))
 
         # Device selection
         if device is not None:
@@ -527,6 +528,13 @@ class FederatedKANEnv(gym.Env):
         base_act = gk_to_action(self.ref_grid_size, self.ref_spline_order)
         self.prev_actions = np.full(self.num_clients, base_act, dtype=np.int64)
 
+        # Initialize cumulative communication metrics
+        self.cum_params = 0
+        self.cum_bytes = 0
+        self.cum_MB = 0.0
+        self.cum_comm_time_s = 0.0
+        self.cum_comm_time_sum_s = 0.0
+
         info = {
             "round": 0,
             "global_accuracy": float(init_test_metrics["accuracy"]),
@@ -537,6 +545,17 @@ class FederatedKANEnv(gym.Env):
             "val_macro_f1": self.f1_prev,
             "val_balanced_accuracy": self.bacc_prev,
             "val_loss": float(init_loss),
+            "params_up": 0,
+            "params_down": 0,
+            "params_round": 0,
+            "bytes_round": 0,
+            "cum_params": 0,
+            "cum_bytes": 0,
+            "cum_MB": 0.0,
+            "est_comm_time_s": 0.0,
+            "est_comm_time_sum_s": 0.0,
+            "cum_comm_time_s": 0.0,
+            "config_histogram": {},
             "telemetry_summary": self.telemetry_tracker.get_summary(),
         }
 
@@ -789,6 +808,35 @@ class FederatedKANEnv(gym.Env):
             else 0.0
         )
 
+        # Standardized Communication Tracking (Downlink projected + Uplink delta, float32)
+        params_up = int(sum_params)
+        params_down = int(sum_params)
+        params_round = int(params_up + params_down)
+        bytes_round = int(params_round * 4)
+        self.cum_params += params_round
+        self.cum_bytes += bytes_round
+        self.cum_MB = float(self.cum_bytes / (1024.0 ** 2))
+
+        # Per-client communication time calculation (slowest bottleneck and total sum)
+        comm_times = []
+        for cid in self.client_ids:
+            bw_i = float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth)
+            c_bytes = float(client_params_list[cid] * 2 * 4)  # Uplink + Downlink bytes
+            c_time = (c_bytes * 8.0) / (bw_i * 1e6)          # bytes * 8 bits / (Mbps * 1e6)
+            comm_times.append(c_time)
+
+        est_comm_time_s = float(max(comm_times)) if comm_times else 0.0
+        est_comm_time_sum_s = float(sum(comm_times)) if comm_times else 0.0
+        self.cum_comm_time_s += est_comm_time_s
+        self.cum_comm_time_sum_s += est_comm_time_sum_s
+
+        # Configuration Histogram (fraction of clients per (G,k) config)
+        config_hist: Dict[str, float] = {}
+        for g, k in ACTION_TUPLES:
+            cnt = sum(1 for (cg, ck) in chosen_configs if cg == g and ck == k)
+            if cnt > 0:
+                config_hist[f"({g},{k})"] = round(cnt / float(self.num_clients), 4)
+
         # Diagnostic info dictionary
         info: Dict[str, Any] = {
             "round": self.current_round,
@@ -807,6 +855,17 @@ class FederatedKANEnv(gym.Env):
             "mean_parameters_per_client": float(np.mean(client_params_list)),
             "total_latency": sum_latency,
             "mean_latency": float(np.mean(client_latencies_list)),
+            "params_up": params_up,
+            "params_down": params_down,
+            "params_round": params_round,
+            "bytes_round": bytes_round,
+            "cum_params": self.cum_params,
+            "cum_bytes": self.cum_bytes,
+            "cum_MB": self.cum_MB,
+            "est_comm_time_s": est_comm_time_s,
+            "est_comm_time_sum_s": est_comm_time_sum_s,
+            "cum_comm_time_s": self.cum_comm_time_s,
+            "config_histogram": config_hist,
             "reward_components": {
                 "acc_term": acc_term,
                 "delta_accuracy": acc_term - smoothness_penalty,

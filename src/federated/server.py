@@ -363,11 +363,19 @@ def run_federated_simulation(
             device=device,
         )
 
-    bytes_per_round = calculate_round_communication_bytes(num_clients, model)
+    p_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    params_up_per_round = num_clients * p_count
+    params_down_per_round = num_clients * p_count
+    params_per_round = params_up_per_round + params_down_per_round
+    bytes_per_round = params_per_round * 4
     mb_per_round = bytes_per_round / (1024.0 ** 2)
 
     history: List[Dict[str, Any]] = []
     cumulative_comm_mb = 0.0
+    cum_params = 0
+    cum_bytes = 0
+    cum_comm_time_s = 0.0
+    cum_comm_time_sum_s = 0.0
 
     best_val_score = float(init_val_metrics.get(checkpoint_metric, init_metrics.get(checkpoint_metric, -1.0)))
     best_round = 0
@@ -384,6 +392,17 @@ def run_federated_simulation(
         "test_micro_f1": float(init_metrics["micro_f1"]),
         "communication_volume_mb": 0.0,
         "cumulative_communication_mb": 0.0,
+        "params_up": 0,
+        "params_down": 0,
+        "params_round": 0,
+        "bytes_round": 0,
+        "cum_params": 0,
+        "cum_bytes": 0,
+        "cum_MB": 0.0,
+        "est_comm_time_s": 0.0,
+        "est_comm_time_sum_s": 0.0,
+        "cum_comm_time_s": 0.0,
+        "config_histogram": {},
         "mean_client_latency": 0.0,
         "mean_client_loss": 0.0,
         "mean_input_variance": float(np.mean([c.input_variance for c in clients.values()])),
@@ -447,6 +466,24 @@ def run_federated_simulation(
         mean_local_loss = float(np.mean([m["local_loss"] for m in round_telemetries]))
         mean_inp_var = float(np.mean([m["input_variance"] for m in round_telemetries]))
 
+        cum_params += params_per_round
+        cum_bytes += bytes_per_round
+        cum_MB = float(cum_bytes / (1024.0 ** 2))
+
+        # Simulated communication times across clients
+        from src.environment.telemetry import BandwidthSimulator
+        bw_sim = BandwidthSimulator(seed=r * 100 + num_clients)
+        bw_clients = bw_sim.sample(num_clients)
+        comm_times = []
+        for cid_idx in range(num_clients):
+            c_bytes = float(2 * p_count * 4)
+            c_time = (c_bytes * 8.0) / (bw_clients[cid_idx] * 1e6)
+            comm_times.append(c_time)
+        est_comm_time_s = float(max(comm_times)) if comm_times else 0.0
+        est_comm_time_sum_s = float(sum(comm_times)) if comm_times else 0.0
+        cum_comm_time_s += est_comm_time_s
+        cum_comm_time_sum_s += est_comm_time_sum_s
+
         round_record = {
             "round": r,
             "test_loss": float(test_loss),
@@ -456,6 +493,17 @@ def run_federated_simulation(
             "test_micro_f1": float(test_metrics["micro_f1"]),
             "communication_volume_mb": float(mb_per_round),
             "cumulative_communication_mb": float(cumulative_comm_mb),
+            "params_up": params_up_per_round,
+            "params_down": params_down_per_round,
+            "params_round": params_per_round,
+            "bytes_round": bytes_per_round,
+            "cum_params": cum_params,
+            "cum_bytes": cum_bytes,
+            "cum_MB": cum_MB,
+            "est_comm_time_s": est_comm_time_s,
+            "est_comm_time_sum_s": est_comm_time_sum_s,
+            "cum_comm_time_s": cum_comm_time_s,
+            "config_histogram": {"(5,3)": 1.0} if hasattr(model, "layers") else {},
             "mean_client_latency": mean_latency,
             "mean_client_loss": mean_local_loss,
             "mean_input_variance": mean_inp_var,

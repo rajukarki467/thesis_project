@@ -342,3 +342,60 @@ def test_project_delta_execution():
     assert isinstance(reward, float)
     assert "config_changes" in step_info
 
+
+def test_communication_logging_fixed_fleet():
+    """
+    Step 1 Unit Test:
+    For the fixed (5,3) fleet with N=8 clients, params_up per round must equal
+    8 * 5,349 = 42,792, and cum_params must be strictly monotonically increasing.
+    """
+    rng = np.random.RandomState(42)
+    client_data = {
+        cid: (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+        for cid in range(8)
+    }
+    test_data = (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+
+    env = FederatedKANEnv(
+        client_datasets=client_data,
+        test_data=test_data,
+        num_clients=8,
+        max_rounds=3,
+        seed=42,
+    )
+    obs, info0 = env.reset(seed=42)
+
+    # Initial zero round checks
+    assert info0["cum_params"] == 0
+    assert info0["params_up"] == 0
+
+    fixed_act = gk_to_action(5, 3)
+    actions = [fixed_act] * 8
+
+    prev_cum_params = 0
+    prev_cum_bytes = 0
+    prev_cum_mb = 0.0
+
+    for r in range(1, 4):
+        obs, reward, terminated, truncated, step_info = env.step(actions)
+
+        # 1. Verification of exact parameter transmission
+        assert step_info["params_up"] == 8 * 5349, f"Expected 42792, got {step_info['params_up']}"
+        assert step_info["params_down"] == 42792
+        assert step_info["params_round"] == 42792 * 2
+        assert step_info["bytes_round"] == 42792 * 2 * 4
+
+        # 2. Verification of strict monotonic increase
+        assert step_info["cum_params"] > prev_cum_params
+        assert step_info["cum_bytes"] > prev_cum_bytes
+        assert step_info["cum_MB"] > prev_cum_mb
+
+        # 3. Verification of communication latency statistics
+        assert step_info["est_comm_time_s"] > 0.0
+        assert step_info["est_comm_time_sum_s"] >= step_info["est_comm_time_s"]
+
+        prev_cum_params = step_info["cum_params"]
+        prev_cum_bytes = step_info["cum_bytes"]
+        prev_cum_mb = step_info["cum_MB"]
+
+

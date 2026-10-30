@@ -76,12 +76,14 @@ from src.utils.metrics import (
 )
 from src.utils.reproducibility import set_seed
 from src.visualization import (
+    generate_all_comm_figures,
     plot_classwise_f1_comparison,
     plot_controller_overhead,
     plot_pareto_frontier,
     plot_reward_sensitivity,
     plot_spline_curves,
 )
+from experiments.generate_comm_tables import generate_comm_performance_tables
 
 # Configure logging
 logging.basicConfig(
@@ -1077,6 +1079,10 @@ def main():
     parser.add_argument("--sweep", action="store_true", help="Run reward sensitivity sweep (lambda1, lambda2)")
     parser.add_argument("--ablation", action="store_true", help="Run non-IID ablation and generate Table 4.1")
     parser.add_argument("--figures", action="store_true", help="Generate all thesis deliverable figures")
+    parser.add_argument("--comm_figures", action="store_true", help="Generate all communication vs performance figures (C1-C8) and tables")
+    parser.add_argument("--results_dir", type=str, default="results/ablations", help="Directory containing traces CSV")
+    parser.add_argument("--comm_out_dir", type=str, default="results/figures/comm", help="Output directory for communication figures")
+    parser.add_argument("--log_x", action="store_true", help="Use log scale for X-axis in convergence curves")
     parser.add_argument("--diagnose", action="store_true", help="Execute Step B diagnostic ablation suite (isolate causes H1-H6)")
     parser.add_argument("--all", action="store_true", help="Execute complete ablation suite, tables, and figures")
     parser.add_argument("--num_rounds", type=int, default=20, help="Federated rounds per test (default: 20)")
@@ -1089,7 +1095,7 @@ def main():
     args = parser.parse_args()
 
     # Default to running all if no specific flag passed
-    if not (args.sweep or args.ablation or args.figures or args.all or args.diagnose):
+    if not (args.sweep or args.ablation or args.figures or args.all or args.diagnose or args.comm_figures):
         args.all = True
 
     set_seed(args.seed)
@@ -1169,6 +1175,20 @@ def main():
         logger.info("\n>>> STAGE 3: THESIS DELIVERABLE FIGURES <<<")
         master_df = load_all_experimental_results()
         generate_thesis_figures(master_df)
+
+    # 4. Communication vs Performance Figures & Tables (Step 2 & 3)
+    if args.comm_figures or args.all:
+        logger.info("\n>>> STAGE 4: COMMUNICATION VS PERFORMANCE FIGURES & BENCHMARK TABLES <<<")
+        trace_path = Path(args.results_dir) / "comm_round_traces.csv"
+        if not trace_path.exists():
+            trace_path = PROJECT_ROOT / "results/ablations/comm_round_traces.csv"
+        if trace_path.exists():
+            df_traces = pd.read_csv(trace_path)
+            generate_all_comm_figures(df_traces, output_dir=args.comm_out_dir, log_x=args.log_x)
+            generate_comm_performance_tables(csv_input_path=str(trace_path), output_dir=args.results_dir)
+            logger.info("Successfully generated Figures C1-C8 and performance tables.")
+        else:
+            logger.warning(f"Communication trace file not found at {trace_path}. Run benchmark runner first.")
 
     logger.info("\nAll ablation experiments, tables, and figures successfully completed!")
 
