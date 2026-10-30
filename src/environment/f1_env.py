@@ -43,7 +43,7 @@ import yaml
 from src.environment.telemetry import TelemetryTracker
 from src.federated.client import FlowerECGClient
 from src.federated.server import CentralizedEvaluator, aggregate_parameters
-from src.models.fastkan_model import FastKANClassifier
+from src.models.fastkan_model import FastKANClassifier, project_spline_weights
 from src.partition import dirichlet_partition
 from src.utils.reproducibility import set_seed
 
@@ -60,6 +60,18 @@ ACTION_TO_INDEX: Dict[Tuple[int, int], int] = {
     gk: idx for idx, gk in enumerate(ACTION_TUPLES)
 }
 NUM_ACTIONS_PER_CLIENT: int = len(ACTION_TUPLES)  # 12
+
+# Knot-nested configurations relative to canonical (5, 3):
+# G in {5, 10} with k=3 (exact knot insertion / subdivision)
+NESTED_ACTION_TUPLES: List[Tuple[int, int]] = [
+    (5, 3), (10, 3)
+]
+
+# Compatible configurations: configs whose round-trip error vs (5, 3) is <= 0.01 (1%)
+# Measured in Step B2: excludes all G=3 and (5, 2)
+COMPATIBLE_ACTION_TUPLES: List[Tuple[int, int]] = [
+    (5, 3), (5, 4), (7, 2), (7, 3), (7, 4), (10, 2), (10, 3), (10, 4)
+]
 
 
 def action_to_gk(action_idx: int) -> Tuple[int, int]:
@@ -122,6 +134,12 @@ class FederatedKANEnv(gym.Env):
         config_path: Optional[Union[str, Path]] = "configs/ppo.yaml",
         client_datasets: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
         test_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        val_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        eval_split: Optional[str] = None,
+        aggregation_mode: Optional[str] = None,
+        sticky_k: int = 1,
+        target_budget_ratio: Optional[float] = None,
+        accuracy_metric: Optional[str] = None,
         num_clients: Optional[int] = None,
         max_rounds: Optional[int] = None,
         lambda1: Optional[float] = None,
@@ -140,12 +158,28 @@ class FederatedKANEnv(gym.Env):
         env_cfg = self.config.get("environment", {})
         reward_cfg = self.config.get("reward", {})
         fed_cfg = self.config.get("federated", {})
+        agg_cfg = self.config.get("aggregation", {})
         telemetry_cfg = self.config.get("telemetry", {})
 
         self.num_clients = int(num_clients if num_clients is not None else env_cfg.get("num_clients", 8))
         self.max_rounds = int(max_rounds if max_rounds is not None else env_cfg.get("max_rounds", 10))
         self.alpha = float(alpha if alpha is not None else env_cfg.get("alpha", 0.5))
         self.global_seed = int(seed if seed is not None else env_cfg.get("seed", 42))
+
+        # Sticky action variant (actions repeat for sticky_k rounds)
+        self.sticky_k = int(sticky_k if sticky_k is not None else env_cfg.get("sticky_k", 1))
+
+        # Evaluation split for reward (default: 'val' to prevent test leakage; 'test' supported)
+        self.eval_split = str(
+            eval_split if eval_split is not None else reward_cfg.get("eval_split", "val")
+        ).lower()
+
+        # Aggregation mode: 'project_full', 'project_delta', 'nested_grid', 'compatible_actions_only'
+        self.aggregation_mode = str(
+            aggregation_mode
+            if aggregation_mode is not None
+            else agg_cfg.get("mode", fed_cfg.get("aggregation_mode", "project_full"))
+        ).lower()
 
         # Reward hyperparameters (Calibrated Normalized Equation 7)
         if normalize_params is not None:
@@ -160,6 +194,13 @@ class FederatedKANEnv(gym.Env):
             self.baseline_budget = float(reward_cfg["baseline_budget"])
         else:
             self.baseline_budget = float(self.num_clients * ref_params_per_client)
+
+        # Target budget ratio relative to baseline budget (B_ref = 42,792 for 8 clients)
+        if target_budget_ratio is not None:
+            self.target_budget_ratio = float(target_budget_ratio)
+        else:
+            self.target_budget_ratio = float(reward_cfg.get("target_budget_ratio", 1.0))
+        self.target_budget = float(self.baseline_budget * self.target_budget_ratio)
 
         self.scale_acc = float(reward_cfg.get("scale_acc", 100.0))
         if lambda1 is not None:
@@ -179,7 +220,15 @@ class FederatedKANEnv(gym.Env):
         self.reward_clip_min = float(reward_cfg.get("reward_clip_min", -5.0))
         self.reward_clip_max = float(reward_cfg.get("reward_clip_max", 5.0))
         self.delta_clip = float(reward_cfg.get("delta_clip", 0.04))
-        self.accuracy_metric = reward_cfg.get("accuracy_metric", "accuracy")
+
+        if accuracy_metric is not None:
+            self.accuracy_metric = str(accuracy_metric).lower()
+        else:
+            self.accuracy_metric = str(reward_cfg.get("accuracy_metric", "macro_f1")).lower()
+
+        # Transient down-weighting: down-weight round 1 and 2 initialization transients
+        self.transient_downweight = bool(reward_cfg.get("transient_downweight", True))
+        self.alpha_abs = float(reward_cfg.get("alpha_abs", 0.5))
 
         # Federated training hyperparameters
         self.local_epochs = int(fed_cfg.get("local_epochs", 1))
@@ -201,6 +250,16 @@ class FederatedKANEnv(gym.Env):
         self.ref_spline_order = int(env_cfg.get("reference_spline_order", 3))
 
         # 2. Define Observation and Action Spaces
+        # Select action set based on aggregation mode
+        if self.aggregation_mode == "nested_grid":
+            self.action_tuples = list(NESTED_ACTION_TUPLES)
+        elif self.aggregation_mode == "compatible_actions_only":
+            self.action_tuples = list(COMPATIBLE_ACTION_TUPLES)
+        else:
+            self.action_tuples = list(ACTION_TUPLES)
+
+        self.num_actions_per_client = len(self.action_tuples)
+
         # Observation Space: Matrix S_t in [0.0, 1.0]^{N x 5}
         self.observation_space = spaces.Box(
             low=0.0,
@@ -209,15 +268,15 @@ class FederatedKANEnv(gym.Env):
             dtype=np.float32,
         )
 
-        # Action Space: MultiDiscrete choice of 12 (G, k) pairs across N clients
+        # Action Space: MultiDiscrete choice across N clients
         self.action_space = spaces.MultiDiscrete(
-            [NUM_ACTIONS_PER_CLIENT] * self.num_clients
+            [self.num_actions_per_client] * self.num_clients
         )
 
         # 3. Load or generate client partitions and evaluation data
         self.client_ids = list(range(self.num_clients))
-        self.client_datasets, self.test_data = self._setup_datasets(
-            client_datasets=client_datasets, test_data=test_data
+        self.client_datasets, self.test_data, self.val_data = self._setup_datasets(
+            client_datasets=client_datasets, test_data=test_data, val_data=val_data
         )
 
         # Compute empirical input variances per client
@@ -239,23 +298,31 @@ class FederatedKANEnv(gym.Env):
             seed=self.global_seed,
         )
 
-        # 5. Initialize Evaluator
+        # 5. Initialize Evaluators (val evaluator for reward, test evaluator strictly for evaluation)
         ref_model = FastKANClassifier(
             layers_hidden=self.layers_hidden,
             grid_size=self.ref_grid_size,
             spline_order=self.ref_spline_order,
         )
-        self.evaluator = CentralizedEvaluator(
+        self.test_evaluator = CentralizedEvaluator(
             model=ref_model,
             test_data=self.test_data,
             batch_size=64,
             device=self.device,
         )
+        self.val_evaluator = CentralizedEvaluator(
+            model=ref_model,
+            test_data=self.val_data,
+            batch_size=64,
+            device=self.device,
+        )
+        self.evaluator = self.val_evaluator if self.eval_split == "val" else self.test_evaluator
 
         # Internal state tracking
         self.current_round: int = 0
         self.acc_prev: float = 0.0
         self.f1_prev: float = 0.0
+        self.bacc_prev: float = 0.0
         self.server_parameters: List[np.ndarray] = []
         self.client_models: Dict[int, FastKANClassifier] = {}
         self.clients: Dict[int, FlowerECGClient] = {}
@@ -279,10 +346,16 @@ class FederatedKANEnv(gym.Env):
         self,
         client_datasets: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]],
         test_data: Optional[Tuple[np.ndarray, np.ndarray]],
-    ) -> Tuple[Dict[int, Tuple[np.ndarray, np.ndarray]], Tuple[np.ndarray, np.ndarray]]:
+        val_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    ) -> Tuple[
+        Dict[int, Tuple[np.ndarray, np.ndarray]],
+        Tuple[np.ndarray, np.ndarray],
+        Tuple[np.ndarray, np.ndarray],
+    ]:
         """Load preprocessed datasets from disk or generate synthetic splits."""
         if client_datasets is not None and test_data is not None:
-            return client_datasets, test_data
+            v_data = val_data if val_data is not None else test_data
+            return client_datasets, test_data, v_data
 
         beats_dir = PROJECT_ROOT / "data" / "processed" / "beats"
         partitions_dir = PROJECT_ROOT / "data" / "partitions"
@@ -292,6 +365,8 @@ class FederatedKANEnv(gym.Env):
         y_tr_path = beats_dir / "y_train.npy"
         x_te_path = beats_dir / "X_test.npy"
         y_te_path = beats_dir / "y_test.npy"
+        x_va_path = beats_dir / "X_val.npy"
+        y_va_path = beats_dir / "y_val.npy"
 
         if x_tr_path.exists() and y_tr_path.exists() and x_te_path.exists() and y_te_path.exists():
             X_train = np.load(x_tr_path)
@@ -300,29 +375,49 @@ class FederatedKANEnv(gym.Env):
             y_test = np.load(y_te_path)
             loaded_test = (X_test, y_test)
 
-            # Check for existing partition indices
+            if val_data is not None:
+                loaded_val = val_data
+            elif x_va_path.exists() and y_va_path.exists():
+                X_val = np.load(x_va_path)
+                y_val = np.load(y_va_path)
+                loaded_val = (X_val, y_val)
+            else:
+                loaded_val = loaded_test
+
+            # Check for existing partition indices with seed support
+            seed_pdir = partitions_dir / f"clients_{self.num_clients}_alpha_{self.alpha}_seed_{self.global_seed}"
             target_pdir = partitions_dir / f"clients_{self.num_clients}_alpha_{self.alpha}"
             alt_pdir = partitions_dir / f"alpha_{self.alpha}"
-            pdir = target_pdir if target_pdir.exists() else alt_pdir
 
             loaded_clients: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-            if pdir.exists() and len(list(pdir.glob("client_*.npy"))) == self.num_clients:
+            if seed_pdir.exists() and len(list(seed_pdir.glob("client_*.npy"))) == self.num_clients:
+                pdir = seed_pdir
+            elif self.global_seed == 42 and target_pdir.exists() and len(list(target_pdir.glob("client_*.npy"))) == self.num_clients:
+                pdir = target_pdir
+            elif self.global_seed == 42 and alt_pdir.exists() and len(list(alt_pdir.glob("client_*.npy"))) == self.num_clients:
+                pdir = alt_pdir
+            else:
+                pdir = None
+
+            if pdir is not None:
                 for cid in self.client_ids:
                     indices = np.load(pdir / f"client_{cid}.npy")
                     loaded_clients[cid] = (X_train[indices], y_train[indices])
             else:
-                # Generate deterministically
+                # Generate deterministically and persist
                 partitions = dirichlet_partition(
                     y=y_train,
                     num_clients=self.num_clients,
                     alpha=self.alpha,
                     seed=self.global_seed,
                 )
+                seed_pdir.mkdir(parents=True, exist_ok=True)
                 for cid in self.client_ids:
                     idx = partitions[cid]
                     loaded_clients[cid] = (X_train[idx], y_train[idx])
+                    np.save(seed_pdir / f"client_{cid}.npy", idx)
 
-            return loaded_clients, loaded_test
+            return loaded_clients, loaded_test, loaded_val
 
         # Fallback to fast synthetic data for isolated testing
         logger.warning("Preprocessed data not found on disk. Generating synthetic ECG datasets.")
@@ -333,6 +428,7 @@ class FederatedKANEnv(gym.Env):
         mock_test_x = rng.randn(200, n_features).astype(np.float32)
         mock_test_y = rng.randint(0, n_classes, size=200).astype(np.int64)
         synthetic_test = (mock_test_x, mock_test_y)
+        synthetic_val = (mock_test_x, mock_test_y)
 
         synthetic_clients = {}
         for cid in self.client_ids:
@@ -340,7 +436,7 @@ class FederatedKANEnv(gym.Env):
             c_y = rng.randint(0, n_classes, size=150).astype(np.int64)
             synthetic_clients[cid] = (c_x, c_y)
 
-        return synthetic_clients, synthetic_test
+        return synthetic_clients, synthetic_test, synthetic_val
 
     def set_seed(self, seed: Optional[int] = None) -> None:
         """Enforce strict deterministic reproducibility across all generators."""
@@ -387,10 +483,18 @@ class FederatedKANEnv(gym.Env):
             val.detach().cpu().numpy() for _, val in server_model.state_dict().items()
         ]
 
-        # Initial zero-round evaluation on test data
+        # Initial zero-round evaluation on validation split (or test split if eval_split == 'test')
         init_loss, init_metrics = self.evaluator.evaluate(self.server_parameters)
         self.acc_prev = float(init_metrics.get("accuracy", 0.0))
         self.f1_prev = float(init_metrics.get("macro_f1", 0.0))
+        self.bacc_prev = float(init_metrics.get("balanced_accuracy", self.acc_prev))
+
+        # Zero leakage: test evaluation strictly for reporting, never influences reward
+        init_test_loss, init_test_metrics = (
+            self.test_evaluator.evaluate(self.server_parameters)
+            if self.eval_split == "val"
+            else (init_loss, init_metrics)
+        )
 
         # Instantiate clients with initial reference architecture
         self.clients = {}
@@ -425,9 +529,14 @@ class FederatedKANEnv(gym.Env):
 
         info = {
             "round": 0,
-            "global_accuracy": self.acc_prev,
-            "global_macro_f1": self.f1_prev,
-            "global_loss": float(init_loss),
+            "global_accuracy": float(init_test_metrics["accuracy"]),
+            "global_macro_f1": float(init_test_metrics["macro_f1"]),
+            "global_balanced_accuracy": float(init_test_metrics.get("balanced_accuracy", init_test_metrics["accuracy"])),
+            "global_loss": float(init_test_loss),
+            "val_accuracy": self.acc_prev,
+            "val_macro_f1": self.f1_prev,
+            "val_balanced_accuracy": self.bacc_prev,
+            "val_loss": float(init_loss),
             "telemetry_summary": self.telemetry_tracker.get_summary(),
         }
 
@@ -465,6 +574,10 @@ class FederatedKANEnv(gym.Env):
                 f"Action count mismatch: expected {self.num_clients}, got {len(actions)}."
             )
 
+        # Handle sticky actions (actions repeat for sticky_k rounds)
+        if self.sticky_k > 1 and self.prev_actions is not None and ((self.current_round % self.sticky_k) != 0):
+            actions = self.prev_actions.copy()
+
         round_num = self.current_round + 1
         client_updates: List[Tuple[List[np.ndarray], int]] = []
         round_metrics: Dict[int, Dict[str, Any]] = {}
@@ -476,7 +589,22 @@ class FederatedKANEnv(gym.Env):
         # 1. Dispatch heterogeneous (G_i, k_i) configurations and train locally
         for cid in self.client_ids:
             act_idx = int(actions[cid])
-            g_i, k_i = action_to_gk(act_idx)
+            if 0 <= act_idx < len(self.action_tuples):
+                g_i, k_i = self.action_tuples[act_idx]
+            elif 0 <= act_idx < len(ACTION_TUPLES):
+                candidate_gk = ACTION_TUPLES[act_idx]
+                if candidate_gk in self.action_tuples:
+                    g_i, k_i = candidate_gk
+                else:
+                    g_i, k_i = min(
+                        self.action_tuples,
+                        key=lambda gk: abs(gk[0] * gk[1] - candidate_gk[0] * candidate_gk[1]),
+                    )
+            else:
+                raise ValueError(
+                    f"Action index {act_idx} out of range [0, {len(self.action_tuples)})."
+                )
+
             chosen_configs.append((g_i, k_i))
 
             client = self.clients[cid]
@@ -499,6 +627,9 @@ class FederatedKANEnv(gym.Env):
             active_params = int(client.model.get_parameter_count())
             client_params_list.append(active_params)
 
+            # Record initial local parameters at (g_i, k_i) before training
+            init_local_params = [p.copy() for p in client.get_parameters()]
+
             # C: Local training round
             fit_config = {
                 "local_epochs": self.local_epochs,
@@ -512,53 +643,126 @@ class FederatedKANEnv(gym.Env):
             client_latencies_list.append(float(metrics["execution_latency"]))
             round_metrics[cid] = metrics
 
-            # D: Interpolate updated client weights back to reference (G_ref, k_ref) for server aggregation
-            for l_idx in range(len(client.model.layers)):
-                client.model.set_layer_gk(
-                    layer_idx=l_idx,
-                    grid_size=self.ref_grid_size,
-                    spline_order=self.ref_spline_order,
-                )
-            resampled_params = client.get_parameters()
-            client_updates.append((resampled_params, n_samples))
+            use_delta = self.aggregation_mode in ("project_delta", "nested_grid", "compatible_actions_only")
+            if use_delta:
+                # D1 (project_delta): Calculate delta at (g_i, k_i), project delta to (ref_grid_size, ref_spline_order)
+                delta_params = []
+                for p_fin, p_ini in zip(client_params, init_local_params):
+                    delta = p_fin - p_ini
+                    if delta.ndim == 3 and (g_i, k_i) != (self.ref_grid_size, self.ref_spline_order):
+                        d_proj = project_spline_weights(
+                            delta,
+                            src_gk=(g_i, k_i),
+                            dst_gk=(self.ref_grid_size, self.ref_spline_order),
+                            grid_range=client.model.grid_range,
+                        )
+                        delta_params.append(d_proj)
+                    else:
+                        delta_params.append(delta)
+                client_updates.append((delta_params, n_samples))
+            else:
+                # D2 (project_full): Interpolate updated client weights back to reference (G_ref, k_ref) for server aggregation
+                for l_idx in range(len(client.model.layers)):
+                    client.model.set_layer_gk(
+                        layer_idx=l_idx,
+                        grid_size=self.ref_grid_size,
+                        spline_order=self.ref_spline_order,
+                    )
+                resampled_params = client.get_parameters()
+                client_updates.append((resampled_params, n_samples))
 
-        # 2. Server Aggregation (Weighted FedAvg on Reference Grid)
-        self.server_parameters = aggregate_parameters(
-            client_updates, canonical_gk=(self.ref_grid_size, self.ref_spline_order)
+        # 2. Server Aggregation
+        use_delta = self.aggregation_mode in ("project_delta", "nested_grid", "compatible_actions_only")
+        if use_delta:
+            total_samples = sum(n for _, n in client_updates)
+            delta_avg = [np.zeros_like(p, dtype=np.float64) for p in self.server_parameters]
+            for delta_p, n_s in client_updates:
+                w = float(n_s) / float(total_samples)
+                for i, dp in enumerate(delta_p):
+                    delta_avg[i] += w * dp.astype(np.float64)
+            self.server_parameters = [
+                (sp.astype(np.float64) + da).astype(sp.dtype)
+                for sp, da in zip(self.server_parameters, delta_avg)
+            ]
+        else:
+            self.server_parameters = aggregate_parameters(
+                client_updates, canonical_gk=(self.ref_grid_size, self.ref_spline_order)
+            )
+
+        # 3. Global Evaluation (validation for reward, test strictly for evaluation)
+        eval_loss, eval_metrics = self.evaluator.evaluate(self.server_parameters)
+        acc_curr = float(eval_metrics.get("accuracy", 0.0))
+        f1_curr = float(eval_metrics.get("macro_f1", 0.0))
+        bacc_curr = float(eval_metrics.get("balanced_accuracy", acc_curr))
+
+        # Zero leakage: test evaluation strictly for reporting, never influences reward
+        test_loss, test_metrics = (
+            self.test_evaluator.evaluate(self.server_parameters)
+            if self.eval_split == "val"
+            else (eval_loss, eval_metrics)
         )
 
-        # 3. Global Evaluation on Held-out Patient Data
-        test_loss, test_metrics = self.evaluator.evaluate(self.server_parameters)
-        acc_curr = float(test_metrics.get("accuracy", 0.0))
-        f1_curr = float(test_metrics.get("macro_f1", 0.0))
-
         # 4. Multi-Objective Reward Calculation (Calibrated Dimensionless Formulation)
-        # R_t = 100.0 * (Acc_t - Acc_{t-1}) - β1 * (Mean_Params_t / Baseline_Params) - β2 * (Mean_Latency_t / Baseline_Latency) - β3 * ||a_t - a_{t-1}||_1
-        delta_acc = float(acc_curr - self.acc_prev)
-        # Safe clipping for numerical gradient stability
-        delta_acc_clipped = float(np.clip(delta_acc, -self.delta_clip, self.delta_clip))
-        acc_term = float(self.scale_acc * delta_acc_clipped)
+        if self.accuracy_metric == "macro_f1":
+            metric_curr = f1_curr
+            metric_prev = self.f1_prev
+        elif self.accuracy_metric == "balanced_accuracy":
+            metric_curr = bacc_curr
+            metric_prev = self.bacc_prev
+        else:
+            metric_curr = acc_curr
+            metric_prev = self.acc_prev
+
+        raw_delta = float(metric_curr - metric_prev)
+
+        # Transient down-weighting: down-weight round 1 and 2 initialization transients
+        if self.transient_downweight:
+            if round_num == 1:
+                round_weight = 0.1
+            elif round_num == 2:
+                round_weight = 0.5
+            else:
+                round_weight = 1.0
+        else:
+            round_weight = 1.0
+
+        effective_delta = raw_delta * round_weight
+        delta_acc_clipped = float(np.clip(effective_delta, -self.delta_clip, self.delta_clip))
+
+        # Small absolute level bonus to provide steady gradient towards high accuracy
+        abs_level_bonus = float(self.alpha_abs * max(0.0, metric_curr - 0.20))
+        acc_term = float(self.scale_acc * delta_acc_clipped + abs_level_bonus)
 
         sum_params = float(sum(client_params_list))
         sum_latency = float(sum(client_latencies_list))
         mean_params = float(np.mean(client_params_list))
         mean_latency = float(np.mean(client_latencies_list))
 
-        # Normalized parameter penalty: Choosing configurations above 42,792 incurs an immediate negative penalty
-        relative_param_cost = float((sum_params - self.baseline_budget) / self.baseline_budget) if self.baseline_budget > 0 else 0.0
+        # Budget constraint relative to fixed (5,3) fleet (B_ref = 42,792)
+        relative_param_cost = (
+            float((sum_params - self.target_budget) / self.baseline_budget)
+            if self.baseline_budget > 0
+            else 0.0
+        )
         if relative_param_cost > 0:
-            param_penalty = float(self.beta1 * relative_param_cost * 1.5)  # Immediate negative penalty for over-parameterization
+            # Asymmetric penalty: heavily punish exceeding budget (linear + quadratic)
+            param_penalty = float(
+                self.beta1 * (relative_param_cost + 4.0 * (relative_param_cost ** 2))
+            )
         else:
-            param_penalty = float(self.beta1 * relative_param_cost)  # Compression incentive when below baseline
+            # Compression incentive when below budget (param_penalty < 0 => reward bonus)
+            param_penalty = float(self.beta1 * relative_param_cost)
 
         latency_penalty = float(self.beta2 * (mean_latency / max(1e-6, self.baseline_latency)))
 
         # Action smoothness regularization: - β3 * ||a_t - a_{t-1}||_1
         if self.prev_actions is None:
-            base_act = gk_to_action(self.ref_grid_size, self.ref_spline_order)
+            base_act = 0 if len(self.action_tuples) != NUM_ACTIONS_PER_CLIENT else gk_to_action(self.ref_grid_size, self.ref_spline_order)
             self.prev_actions = np.full(self.num_clients, base_act, dtype=np.int64)
+
         smoothness_norm = float(np.sum(np.abs(actions - self.prev_actions)))
         smoothness_penalty = float(self.beta3 * smoothness_norm)
+        config_changes = int(np.sum(actions != self.prev_actions))
 
         raw_reward = float(acc_term - param_penalty - latency_penalty - smoothness_penalty)
         reward = float(np.clip(raw_reward, self.reward_clip_min, self.reward_clip_max))
@@ -567,10 +771,13 @@ class FederatedKANEnv(gym.Env):
         self.prev_actions = actions.copy()
         self.acc_prev = acc_curr
         self.f1_prev = f1_curr
+        self.bacc_prev = bacc_curr
         self.current_round = round_num
 
         # 5. Update Telemetry and Collect New Observation S^{t+1}
         new_obs = self.telemetry_tracker.update_round(round_metrics)
+        assert np.all(np.isfinite(new_obs)), f"Non-finite values encountered in observation: {new_obs}"
+        new_obs = np.clip(new_obs, 0.0, 1.0)
 
         # 6. Check Termination
         terminated = bool(self.current_round >= self.max_rounds)
@@ -585,10 +792,17 @@ class FederatedKANEnv(gym.Env):
         # Diagnostic info dictionary
         info: Dict[str, Any] = {
             "round": self.current_round,
-            "global_accuracy": acc_curr,
-            "global_macro_f1": f1_curr,
+            "global_accuracy": float(test_metrics["accuracy"]),
+            "global_macro_f1": float(test_metrics["macro_f1"]),
+            "global_balanced_accuracy": float(test_metrics.get("balanced_accuracy", test_metrics["accuracy"])),
             "global_loss": float(test_loss),
-            "delta_accuracy": delta_acc,
+            "val_accuracy": acc_curr,
+            "val_macro_f1": f1_curr,
+            "val_balanced_accuracy": bacc_curr,
+            "val_loss": float(eval_loss),
+            "delta_accuracy": raw_delta,
+            "effective_delta_accuracy": effective_delta,
+            "config_changes": config_changes,
             "total_parameters": sum_params,
             "mean_parameters_per_client": float(np.mean(client_params_list)),
             "total_latency": sum_latency,
@@ -596,7 +810,7 @@ class FederatedKANEnv(gym.Env):
             "reward_components": {
                 "acc_term": acc_term,
                 "delta_accuracy": acc_term - smoothness_penalty,
-                "raw_delta_acc": delta_acc,
+                "raw_delta_acc": raw_delta,
                 "delta_acc_clipped": delta_acc_clipped,
                 "param_penalty": param_penalty,
                 "relative_param_cost": relative_param_cost,

@@ -35,6 +35,7 @@ import yaml
 
 from src.controllers.ppo_controller import PPOController, PPOLoggingCallback
 from src.environment.f1_env import FederatedKANEnv, action_to_gk
+from src.environment.surrogate_env import SurrogateFederatedKANEnv
 from src.utils.reproducibility import set_seed
 
 # Configure logging
@@ -60,29 +61,37 @@ def get_gpu_memory_mb() -> float:
 
 
 def train_ppo(
-    env: FederatedKANEnv,
-    timesteps: int = 100,
+    env: Union[FederatedKANEnv, SurrogateFederatedKANEnv],
+    timesteps: int = 20000,
     config_path: str = "configs/ppo.yaml",
     checkpoint_path: str = "results/adaptive_kan/checkpoints/ppo_model.zip",
     log_dir: str = "logs/ppo",
     seed: int = 42,
+    use_action_prior: bool = False,
+    learning_rate: float = 3e-4,
+    n_steps: int = 128,
+    batch_size: int = 64,
+    ent_coef: float = 0.01,
 ) -> PPOController:
     """
     Train PPO meta-controller on the federated Gymnasium environment.
     """
-    logger.info(f"\n{'='*75}\nINITIALIZING PPO TRAINING ({timesteps} TIMESTEPS)\n{'='*75}")
+    logger.info(f"\n{'='*75}\nINITIALIZING PPO TRAINING ({timesteps} TIMESTEPS | PRIOR: {use_action_prior})\n{'='*75}")
     set_seed(seed)
 
-    # In dry-run or short training, ensure n_steps fits timesteps
-    n_steps = min(32, timesteps)
-    batch_size = min(16, n_steps)
+    effective_n_steps = min(n_steps, timesteps)
+    effective_batch = min(batch_size, effective_n_steps)
 
     controller = PPOController(
         env=env,
         config_path=config_path,
-        n_steps=n_steps,
-        batch_size=batch_size,
+        learning_rate=learning_rate,
+        n_steps=effective_n_steps,
+        batch_size=effective_batch,
+        ent_coef=ent_coef,
+        use_action_prior=use_action_prior,
         verbose=1,
+        seed=seed,
     )
 
     callback = PPOLoggingCallback(log_dir=log_dir)
@@ -90,6 +99,7 @@ def train_ppo(
     controller.train(total_timesteps=timesteps, callback=callback)
     train_duration = time.perf_counter() - train_start
 
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"PPO training finished in {train_duration:.2f} s. Saving checkpoint to {checkpoint_path}...")
     controller.save(checkpoint_path)
     return controller
@@ -260,9 +270,16 @@ def main():
         default=[0.1, 0.5, 1.0],
         help="Dirichlet alpha skew parameters to evaluate",
     )
-    parser.add_argument("--timesteps", type=int, default=200, help="Total PPO training timesteps")
+    parser.add_argument("--timesteps", type=int, default=20000, help="Total PPO training timesteps")
     parser.add_argument("--eval_rounds", type=int, default=10, help="Federated evaluation rounds per alpha")
     parser.add_argument("--config", type=str, default="configs/ppo.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--aggregation_mode",
+        type=str,
+        default="project_delta",
+        choices=["project_delta", "project_full", "nested_grid", "compatible_actions_only"],
+        help="Aggregation strategy",
+    )
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -272,6 +289,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="results/adaptive_kan", help="Output directory")
     parser.add_argument("--log_dir", type=str, default="logs/ppo", help="PPO training log directory")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed")
+    parser.add_argument("--use-action-prior", action="store_true", help="Initialize action_net bias toward (5, 3)")
+    parser.add_argument("--real-env", action="store_true", help="Train on full FL environment instead of surrogate")
     parser.add_argument("--dry-run", action="store_true", help="Quick dry-run validation (16 timesteps, 2 rounds)")
     args = parser.parse_args()
 
@@ -291,12 +310,24 @@ def main():
 
     # 1. Training Phase
     if args.mode in ["train", "train_eval"]:
-        train_env = FederatedKANEnv(
-            config_path=args.config,
-            alpha=0.5,
-            max_rounds=eval_rounds,
-            seed=args.seed,
-        )
+        if not args.real_env:
+            logger.info("Using SurrogateFederatedKANEnv for high-throughput PPO policy training...")
+            train_env = SurrogateFederatedKANEnv(
+                config_path=args.config,
+                aggregation_mode=args.aggregation_mode,
+                max_rounds=eval_rounds,
+                seed=args.seed,
+            )
+        else:
+            logger.info("Using real FederatedKANEnv for PPO policy training...")
+            train_env = FederatedKANEnv(
+                config_path=args.config,
+                alpha=0.5,
+                max_rounds=eval_rounds,
+                aggregation_mode=args.aggregation_mode,
+                seed=args.seed,
+            )
+
         controller = train_ppo(
             env=train_env,
             timesteps=timesteps,
@@ -304,6 +335,7 @@ def main():
             checkpoint_path=str(checkpoint_path),
             log_dir=args.log_dir,
             seed=args.seed,
+            use_action_prior=args.use_action_prior,
         )
 
     # 2. Evaluation Phase

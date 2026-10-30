@@ -2,16 +2,21 @@
 Evaluation metrics for ECG heartbeat classification.
 """
 
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
+import warnings
 import numpy as np
+from scipy import stats
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
 )
+
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 AAMI_CLASSES = ["N", "SVEB", "VEB", "F", "Q"]
 
@@ -36,8 +41,8 @@ def compute_metrics(
     Returns
     -------
     Dict[str, Any]
-        Dictionary with accuracy, macro/micro/weighted F1, precision, recall,
-        and per-class breakdown.
+        Dictionary with accuracy, balanced_accuracy, macro/micro/weighted F1,
+        precision, recall, and per-class breakdown.
     """
     y_true = np.asarray(y_true, dtype=np.int64)
     y_pred = np.asarray(y_pred, dtype=np.int64)
@@ -45,18 +50,21 @@ def compute_metrics(
     if class_names is None:
         class_names = AAMI_CLASSES
 
-    acc = float(accuracy_score(y_true, y_pred))
-    macro_f1 = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
-    micro_f1 = float(f1_score(y_true, y_pred, average="micro", zero_division=0))
-    weighted_f1 = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+    label_indices = list(range(len(class_names)))
 
-    macro_precision = float(precision_score(y_true, y_pred, average="macro", zero_division=0))
-    macro_recall = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
+    acc = float(accuracy_score(y_true, y_pred))
+    balanced_acc = float(balanced_accuracy_score(y_true, y_pred))
+    macro_f1 = float(f1_score(y_true, y_pred, labels=label_indices, average="macro", zero_division=0))
+    micro_f1 = float(f1_score(y_true, y_pred, labels=label_indices, average="micro", zero_division=0))
+    weighted_f1 = float(f1_score(y_true, y_pred, labels=label_indices, average="weighted", zero_division=0))
+
+    macro_precision = float(precision_score(y_true, y_pred, labels=label_indices, average="macro", zero_division=0))
+    macro_recall = float(recall_score(y_true, y_pred, labels=label_indices, average="macro", zero_division=0))
 
     # Per-class metrics
-    per_class_f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
-    per_class_recall = recall_score(y_true, y_pred, average=None, zero_division=0)
-    per_class_precision = precision_score(y_true, y_pred, average=None, zero_division=0)
+    per_class_f1 = f1_score(y_true, y_pred, labels=label_indices, average=None, zero_division=0)
+    per_class_recall = recall_score(y_true, y_pred, labels=label_indices, average=None, zero_division=0)
+    per_class_precision = precision_score(y_true, y_pred, labels=label_indices, average=None, zero_division=0)
 
     class_metrics = {}
     for idx, c_name in enumerate(class_names):
@@ -69,10 +77,11 @@ def compute_metrics(
             "precision": prec_val,
         }
 
-    conf_mat = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names)))).tolist()
+    conf_mat = confusion_matrix(y_true, y_pred, labels=label_indices).tolist()
 
     return {
         "accuracy": acc,
+        "balanced_accuracy": balanced_acc,
         "macro_f1": macro_f1,
         "micro_f1": micro_f1,
         "weighted_f1": weighted_f1,
@@ -80,6 +89,66 @@ def compute_metrics(
         "macro_recall": macro_recall,
         "class_metrics": class_metrics,
         "confusion_matrix": conf_mat,
+    }
+
+
+def compute_paired_significance(
+    scores_a: Sequence[float],
+    scores_b: Sequence[float],
+) -> Dict[str, Any]:
+    """
+    Perform paired t-test and Wilcoxon signed-rank test between two methods across seeds.
+
+    Parameters
+    ----------
+    scores_a : Sequence[float]
+        Scores for method A across seeds (e.g., PPO-Adaptive-KAN).
+    scores_b : Sequence[float]
+        Scores for method B across seeds (e.g., FedAvg-KAN fixed (5,3)).
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing mean difference, paired t-statistic, t p-value,
+        Wilcoxon statistic, and Wilcoxon p-value.
+    """
+    a = np.asarray(scores_a, dtype=np.float64)
+    b = np.asarray(scores_b, dtype=np.float64)
+    diff = a - b
+    n = len(diff)
+
+    mean_diff = float(np.mean(diff)) if n > 0 else 0.0
+    std_diff = float(np.std(diff, ddof=1)) if n > 1 else 0.0
+
+    t_stat = np.nan
+    t_pval = np.nan
+    w_stat = np.nan
+    w_pval = np.nan
+
+    if n >= 2 and np.any(diff != 0):
+        try:
+            t_res = stats.ttest_rel(a, b)
+            t_stat = float(t_res.statistic)
+            t_pval = float(t_res.pvalue)
+        except Exception:
+            pass
+
+        try:
+            # Zero differences handled via wilcoxon method
+            w_res = stats.wilcoxon(diff, zero_method="wilcox", correction=True)
+            w_stat = float(w_res.statistic)
+            w_pval = float(w_res.pvalue)
+        except Exception:
+            pass
+
+    return {
+        "n_seeds": n,
+        "mean_diff": mean_diff,
+        "std_diff": std_diff,
+        "t_stat": t_stat,
+        "t_pvalue": t_pval,
+        "wilcoxon_stat": w_stat,
+        "wilcoxon_pvalue": w_pval,
     }
 
 

@@ -7,7 +7,7 @@
 [![Flower](https://img.shields.io/badge/Flower-1.7.0-yellow.svg)](https://flower.ai/)
 [![WFDB](https://img.shields.io/badge/WFDB-4.3.1-brightgreen.svg)](https://physionet.org/about/software/)
 [![Dataset](https://img.shields.io/badge/Dataset-MIT--BIH%20Arrhythmia-orange.svg)](https://physionet.org/content/mitdb/1.0.0/)
-[![Tests](https://img.shields.io/badge/Tests-26%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-25%20Passing-success.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 An end-to-end research framework implementing **Resource-Adaptive Federated Kolmogorov-Arnold Networks (FedKAN)** for heartbeat arrhythmia classification on the **MIT-BIH Arrhythmia Database**, strictly following the **ANSI/AAMI EC57** international standard.
@@ -382,27 +382,27 @@ Implemented in [`src/controllers/ppo_controller.py`](src/controllers/ppo_control
 
 ### Master Benchmark Comparison Table (Table 4.1 Deliverable)
 
-Evaluated on the patient-level test set ($18,175$ beats across 8 unseen clinical records) following ANSI/AAMI EC57:
+Rigorous empirical evaluation across **5 Random Seeds (42--46)** over **10 Communication Rounds** per configuration, strictly using validation split checkpoint selection (zero test-set leakage). Evaluated on the held-out patient-level test set ($18,175$ beats across 8 unseen clinical records) following ANSI/AAMI EC57. Headline metrics report mean $\pm$ standard deviation:
 
-| Method | Dirichlet $\alpha$ | Accuracy (%) | Macro F1 (%) | Active Params/Round | Comm. Savings vs. Fixed (%) | Comm. Savings vs. Fine Grid (%) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FedAvg-MLP** | $\alpha = 0.1$ | 75.66% | 26.27% | 43,816 | -2.4% | +38.5% |
-| **FedAvg-KAN** | $\alpha = 0.1$ | **86.83%** | **36.31%** | 42,792 | +0.0% (Ref) | +39.9% |
-| **FedProx-KAN** | $\alpha = 0.1$ | **86.62%** | **36.18%** | 42,792 | +0.0% | +39.9% |
-| **Heuristic-KAN** | $\alpha = 0.1$ | 85.88% | 35.66% | 46,344 | -8.3% | +34.9% |
-| **PPO-Adaptive-KAN** | $\alpha = 0.1$ | 84.34% | 34.53% | 50,290 | -17.5% | **+29.37%** |
-| **FedAvg-MLP** | $\alpha = 0.5$ | 75.84% | 32.88% | 43,816 | -2.4% | +38.5% |
-| **FedAvg-KAN** | $\alpha = 0.5$ | **83.69%** | **43.16%** | 42,792 | +0.0% (Ref) | +39.9% |
-| **FedProx-KAN** | $\alpha = 0.5$ | **82.67%** | **42.12%** | 42,792 | +0.0% | +39.9% |
-| **Heuristic-KAN** | $\alpha = 0.5$ | 80.95% | 40.37% | 46,344 | -8.3% | +34.9% |
-| **PPO-Adaptive-KAN** | $\alpha = 0.5$ | 78.59% | 38.05% | 50,093 | -17.1% | **+29.65%** |
-| **FedAvg-MLP** | $\alpha = 1.0$ | 74.73% | 32.62% | 43,816 | -2.4% | +38.5% |
-| **FedAvg-KAN** | $\alpha = 1.0$ | **77.20%** | **38.48%** | 42,792 | +0.0% (Ref) | +39.9% |
-| **FedProx-KAN** | $\alpha = 1.0$ | 74.53% | 33.09% | 42,792 | +0.0% | +39.9% |
-| **Heuristic-KAN** | $\alpha = 1.0$ | 74.31% | 34.50% | 46,344 | -8.3% | +34.9% |
-| **PPO-Adaptive-KAN** | $\alpha = 1.0$ | 72.76% | 31.15% | 49,106 | -14.8% | **+31.04%** |
+| $\alpha$ | Method / Configuration | Test Acc (%) | Macro F1 (%) | Balanced Acc (%) | Active Params/Round | Comm. Savings vs. Fixed (5,3) | Comm. Savings vs. Fine (10,4) | Comm. Vol (MB) | $p$-value (Acc vs Fixed) |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 0.1 | **FedAvg-KAN (fixed 5,3)** | 65.20 ± 25.35 | 27.60 ± 13.18 | 29.47 ± 9.76 | 42,792 | +0.0% (Ref) | +39.9% | 3.26 | - |
+| 0.1 | **Uniform-Fleet-(3,2)** | 65.09 ± 25.09 | 27.63 ± 12.93 | 29.48 ± 9.32 | 28,584 | +33.2% | +59.9% | 2.18 | 0.8542 |
+| 0.1 | **Uniform-Fleet-(10,4)** | 64.26 ± 24.68 | 26.45 ± 12.69 | 28.51 ± 9.60 | 71,208 | -66.4% | +0.0% | 5.43 | 0.2086 |
+| 0.1 | **Heuristic-KAN (project_delta)** | 65.00 ± 25.08 | 27.63 ± 13.11 | 29.40 ± 9.47 | 46,344 | -8.3% | +34.9% | 3.54 | 0.5335 |
+| 0.1 | **PPO-Adaptive-KAN (project_delta)** | 64.89 ± 25.11 | 27.27 ± 13.13 | 29.39 ± 10.12 | 29,768 | **+30.4%** | **+58.2%** | 2.27 | 0.3539 |
+| 0.5 | **FedAvg-KAN (fixed 5,3)** | 86.24 ± 2.04 | 46.43 ± 2.17 | 46.27 ± 3.07 | 42,792 | +0.0% (Ref) | +39.9% | 3.26 | - |
+| 0.5 | **Uniform-Fleet-(3,2)** | 84.55 ± 2.84 | 45.97 ± 2.16 | 46.55 ± 3.15 | 28,584 | +33.2% | +59.9% | 2.18 | 0.2222 |
+| 0.5 | **Uniform-Fleet-(10,4)** | 85.39 ± 1.85 | 46.25 ± 2.04 | 46.50 ± 1.74 | 71,208 | -66.4% | +0.0% | 5.43 | 0.1993 |
+| 0.5 | **Heuristic-KAN (project_delta)** | 85.67 ± 1.39 | 46.52 ± 1.54 | 46.94 ± 2.44 | 46,344 | -8.3% | +34.9% | 3.54 | 0.4961 |
+| 0.5 | **PPO-Adaptive-KAN (project_delta)** | 83.40 ± 2.49 | 45.20 ± 1.89 | 46.19 ± 2.56 | 29,768 | **+30.4%** | **+58.2%** | 2.27 | 0.0067 |
+| 1.0 | **FedAvg-KAN (fixed 5,3)** | 81.50 ± 2.24 | 44.71 ± 1.59 | 45.99 ± 2.42 | 42,792 | +0.0% (Ref) | +39.9% | 3.26 | - |
+| 1.0 | **Uniform-Fleet-(3,2)** | 80.05 ± 3.05 | 43.55 ± 1.62 | 45.42 ± 1.65 | 28,584 | +33.2% | +59.9% | 2.18 | 0.3793 |
+| 1.0 | **Uniform-Fleet-(10,4)** | 82.73 ± 2.47 | 45.41 ± 0.89 | 46.48 ± 2.28 | 71,208 | -66.4% | +0.0% | 5.43 | 0.0236 |
+| 1.0 | **Heuristic-KAN (project_delta)** | 81.42 ± 2.07 | 44.66 ± 1.33 | 46.15 ± 1.38 | 46,344 | -8.3% | +34.9% | 3.54 | 0.9085 |
+| 1.0 | **PPO-Adaptive-KAN (project_delta)** | 79.68 ± 2.41 | 42.67 ± 1.44 | 44.25 ± 1.48 | 29,768 | **+30.4%** | **+58.2%** | 2.27 | 0.1341 |
 
-*Serialized LaTeX and Markdown tables: [`results/ablations/table_4_1_benchmark.tex`](results/ablations/table_4_1_benchmark.tex) and [`results/ablations/table_4_1_benchmark.md`](results/ablations/table_4_1_benchmark.md).*
+*Serialized LaTeX and Markdown tables: [`results/adaptive_kan/table41_master_benchmark.tex`](results/adaptive_kan/table41_master_benchmark.tex) and [`results/adaptive_kan/table41_master_benchmark.md`](results/adaptive_kan/table41_master_benchmark.md).*
 
 ---
 
@@ -728,7 +728,7 @@ Split Breakdown:
   - Client metadata serialization and label skew visualization.
 - [x] **Phase 3: Deep Learning Architectures**
   - Modular FastKAN classifier with Cox-de Boor B-splines and dynamic $(G, k)$ edge reconfigurability ($G \in \{3, 5, 7, 10\}, k \in \{2, 3, 4\}$).
-  - Parameter-matched MLP baseline ($5,351$ vs $5,349$ parameters) for rigorous fair evaluation.
+  - Parameter-matched MLP baseline ($5,477$ parameters, matched to reference $5,349$ parameters) for rigorous fair evaluation.
 - [x] **Phase 4: Flower (`flwr`) Federated Integration**
   - `FlowerECGClient(NumPyClient)` with client telemetry (`execution_latency`, `local_loss`, `input_variance`) and local validation.
   - FedProx proximal regularization term ($\frac{\mu}{2}\|\theta - \theta_t\|^2$).
@@ -739,14 +739,14 @@ Split Breakdown:
 - [x] **Phase 6: Resource-Adaptive Gymnasium Environment & Telemetry**
   - Implemented 5-dim client-server telemetry tracker (`src/environment/telemetry.py`) with curvature $\kappa^i$, empirical variance, and dynamic bandwidth simulator.
   - Formulated Gymnasium MDP (`src/environment/f1_env.py`) with $\text{Box}(0, 1, (N, 5))$ observation space and $\text{MultiDiscrete}([12] \times N)$ action space.
-  - Multi-objective step reward according to Equation (7) ($R_t = \Delta\text{Acc}_{\text{global}} - \lambda_1 \sum \text{Params} - \lambda_2 \sum \Delta\tau$).
-  - Continuous B-spline parameter interpolation across heterogeneous edge client configurations.
-  - 12 comprehensive unit tests in `tests/test_environment.py`.
+  - Multi-objective step reward according to Equation (7) with asymmetric budget penalty relative to reference fleet ($B_{\text{ref}} = 42,792$).
+  - Continuous B-spline parameter interpolation and delta-projection (`project_delta`) across heterogeneous edge client configurations.
+  - 15 comprehensive unit tests in `tests/test_environment.py`.
 - [x] **Phase 7: Adaptive Meta-Controllers: Rule-Based Heuristic & PPO Actor-Critic**
   - Deterministic rule-based quantile heuristic controller (`src/controllers/heuristic.py`) allocating $(G_i, k_i)$ based on composite score $C_i = w_1 L_i + w_2 V_i + w_3 (1/\text{bw}_i)$.
   - Stable-Baselines3 PPO Actor-Critic meta-controller (`src/controllers/ppo_controller.py`) with multi-categorical action heads and clipped surrogate loss.
-  - Streamlined experiment runners (`experiments/run_heuristic.py`, `experiments/run_ppo.py`) with decision overhead profiling ($\approx 1.19\text{ ms}$).
-  - 16 comprehensive unit tests passing across `tests/`.
+  - Streamlined experiment runners (`experiments/run_heuristic.py`, `experiments/run_ppo.py`) with decision overhead profiling ($\approx 1.12\text{ ms}$).
+  - 25 comprehensive unit tests passing across `tests/` (`tests/test_aggregation.py` [6], `tests/test_controllers.py` [4], `tests/test_environment.py` [15]).
 - [x] **Phase 8: Ablation Studies, Thesis Deliverable Figures & Interactive Analysis**
   - Reward weight sensitivity sweep across $\lambda_1 \in [10^{-6}, 10^{-4}]$ and $\lambda_2 \in [10^{-3}, 10^{-1}]$ exploring the accuracy-latency Pareto frontier.
   - Non-IID robustness ablation across all 5 models evaluating performance degradation rates.

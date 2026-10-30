@@ -181,6 +181,7 @@ class PPOController:
         self.batch_size = int(kwargs.pop("batch_size", ppo_cfg.get("batch_size", 32)))
         self.n_epochs = int(kwargs.pop("n_epochs", ppo_cfg.get("n_epochs", 10)))
         self.seed = int(kwargs.pop("seed", self.config.get("environment", {}).get("seed", 42)))
+        self.use_action_prior = bool(kwargs.pop("use_action_prior", ppo_cfg.get("use_action_prior", False)))
 
         # Actor-Critic Architecture (shared feature extractor + separate heads)
         policy_kwargs = kwargs.pop("policy_kwargs", dict(
@@ -209,7 +210,8 @@ class PPOController:
                 device=self.device_str,
                 **kwargs,
             )
-            self._init_policy_bias()
+            if self.use_action_prior:
+                self._init_policy_bias()
         else:
             self.model = None
 
@@ -217,6 +219,7 @@ class PPOController:
         """
         Initialize action_net bias towards baseline (action 4: G=5, k=3) and
         efficient configurations (actions 0..3) to prevent initial over-parameterization.
+        Only applied when use_action_prior is True.
         """
         if self.model is None or not hasattr(self.model, "policy"):
             return
@@ -225,14 +228,18 @@ class PPOController:
             with torch.no_grad():
                 b = action_net.bias
                 num_logits = b.numel()
-                num_clients = num_logits // 12
-                for c in range(num_clients):
-                    # Actions 0..3: +0.5 (efficient configurations)
-                    b[c * 12 : c * 12 + 4] = 0.5
-                    # Action 4: +1.5 (FedAvg-KAN baseline G=5, k=3)
-                    b[c * 12 + 4] = 1.5
-                    # Actions 5..11: -1.5 (over-parameterized configurations)
-                    b[c * 12 + 5 : (c + 1) * 12] = -1.5
+                n_actions = 12
+                if self.env is not None and hasattr(self.env.action_space, "nvec"):
+                    n_actions = int(self.env.action_space.nvec[0])
+                if n_actions == 12:
+                    num_clients = num_logits // 12
+                    for c in range(num_clients):
+                        # Actions 0..3: +0.5 (efficient configurations)
+                        b[c * 12 : c * 12 + 4] = 0.5
+                        # Action 4: +1.5 (FedAvg-KAN baseline G=5, k=3)
+                        b[c * 12 + 4] = 1.5
+                        # Actions 5..11: -1.5 (over-parameterized configurations)
+                        b[c * 12 + 5 : (c + 1) * 12] = -1.5
 
     def _load_config(self, config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         """Load YAML configuration or return sensible defaults."""

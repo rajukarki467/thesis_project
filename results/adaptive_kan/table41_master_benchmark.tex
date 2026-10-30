@@ -1,0 +1,29 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{Empirical Multi-Seed Evaluation of Federated KAN under Dirichlet Non-IID Skew ($\alpha \in \{0.1, 0.5, 1.0\}$) across 5 Random Seeds (42--46) over 10 Communication Rounds. Checkpoint selection is strictly conducted on the validation split (zero test leakage). Headline metrics report mean $\pm$ standard deviation.}
+\label{tab:fedkan_master_results}
+\begin{tabular}{llcccccc}
+\toprule
+\textbf{$\alpha$} & \textbf{Algorithm / Configuration} & \textbf{Test Acc (\%)} & \textbf{Macro F1 (\%)} & \textbf{Balanced Acc (\%)} & \textbf{Params/Rnd} & \textbf{Savings vs (5,3)} & \textbf{$p$-value} \\
+\midrule
+$\alpha = 0.1$ & FedAvg-KAN (fixed 5,3) & 65.20 \pm 25.35 & 27.60 \pm 13.18 & 29.47 \pm 9.76 & 42,792 & +0.0\% & - \\
+ & Uniform (3,2) & 65.09 \pm 25.09 & 27.63 \pm 12.93 & 29.48 \pm 9.32 & 28,584 & +33.2\% & 0.8542 \\
+ & Uniform (10,4) & 64.26 \pm 24.68 & 26.45 \pm 12.69 & 28.51 \pm 9.60 & 71,208 & -66.4\% & 0.2086 \\
+ & Heuristic-KAN \textsc{(Delta)} & 65.00 \pm 25.08 & 27.63 \pm 13.11 & 29.40 \pm 9.47 & 46,344 & -8.3\% & 0.5335 \\
+ & PPO-Adaptive-KAN \textsc{(Delta)} & 64.89 \pm 25.11 & 27.27 \pm 13.13 & 29.39 \pm 10.12 & 29,768 & +30.4\% & 0.3539 \\
+\midrule
+$\alpha = 0.5$ & FedAvg-KAN (fixed 5,3) & 86.24 \pm 2.04 & 46.43 \pm 2.17 & 46.27 \pm 3.07 & 42,792 & +0.0\% & - \\
+ & Uniform (3,2) & 84.55 \pm 2.84 & 45.97 \pm 2.16 & 46.55 \pm 3.15 & 28,584 & +33.2\% & 0.2222 \\
+ & Uniform (10,4) & 85.39 \pm 1.85 & 46.25 \pm 2.04 & 46.50 \pm 1.74 & 71,208 & -66.4\% & 0.1993 \\
+ & Heuristic-KAN \textsc{(Delta)} & 85.67 \pm 1.39 & 46.52 \pm 1.54 & 46.94 \pm 2.44 & 46,344 & -8.3\% & 0.4961 \\
+ & PPO-Adaptive-KAN \textsc{(Delta)} & 83.40 \pm 2.49 & 45.20 \pm 1.89 & 46.19 \pm 2.56 & 29,768 & +30.4\% & 0.0067 \\
+\midrule
+$\alpha = 1.0$ & FedAvg-KAN (fixed 5,3) & 81.50 \pm 2.24 & 44.71 \pm 1.59 & 45.99 \pm 2.42 & 42,792 & +0.0\% & - \\
+ & Uniform (3,2) & 80.05 \pm 3.05 & 43.55 \pm 1.62 & 45.42 \pm 1.65 & 28,584 & +33.2\% & 0.3793 \\
+ & Uniform (10,4) & 82.73 \pm 2.47 & 45.41 \pm 0.89 & 46.48 \pm 2.28 & 71,208 & -66.4\% & 0.0236 \\
+ & Heuristic-KAN \textsc{(Delta)} & 81.42 \pm 2.07 & 44.66 \pm 1.33 & 46.15 \pm 1.38 & 46,344 & -8.3\% & 0.9085 \\
+ & PPO-Adaptive-KAN \textsc{(Delta)} & 79.68 \pm 2.41 & 42.67 \pm 1.44 & 44.25 \pm 1.48 & 29,768 & +30.4\% & 0.1341 \\
+\bottomrule
+\end{tabular}
+\end{table*}

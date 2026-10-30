@@ -269,3 +269,76 @@ def test_environment_reproducibility():
 
     np.testing.assert_allclose(obs1, obs2, atol=1e-5)
     assert pytest.approx(info1["global_accuracy"], abs=1e-5) == info2["global_accuracy"]
+
+
+def test_aggregation_modes_action_spaces():
+    """Verify action spaces for nested_grid and compatible_actions_only."""
+    rng = np.random.RandomState(42)
+    client_data = {
+        cid: (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+        for cid in range(2)
+    }
+    test_data = (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+
+    env_nested = FederatedKANEnv(
+        client_datasets=client_data, test_data=test_data, num_clients=2,
+        aggregation_mode="nested_grid", seed=42,
+    )
+    assert env_nested.action_space.nvec.tolist() == [2, 2]
+    assert env_nested.action_tuples == [(5, 3), (10, 3)]
+
+    env_compat = FederatedKANEnv(
+        client_datasets=client_data, test_data=test_data, num_clients=2,
+        aggregation_mode="compatible_actions_only", seed=42,
+    )
+    assert env_compat.action_space.nvec.tolist() == [8, 8]
+    assert len(env_compat.action_tuples) == 8
+
+
+def test_sticky_actions_execution():
+    """Verify sticky action repeat for sticky_k rounds."""
+    rng = np.random.RandomState(42)
+    client_data = {
+        cid: (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+        for cid in range(2)
+    }
+    test_data = (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+
+    env = FederatedKANEnv(
+        client_datasets=client_data, test_data=test_data, num_clients=2,
+        max_rounds=3, sticky_k=3, seed=42,
+    )
+    env.reset(seed=42)
+
+    # Round 1: actions [1, 2]
+    _, _, _, _, info1 = env.step([1, 2])
+    configs1 = [(a["G"], a["k"]) for a in info1["actions"]]
+
+    # Round 2: submit new actions [7, 8], but sticky_k=3 should keep configs from round 1
+    _, _, _, _, info2 = env.step([7, 8])
+    configs2 = [(a["G"], a["k"]) for a in info2["actions"]]
+    assert configs2 == configs1
+
+
+def test_project_delta_execution():
+    """Verify end-to-end execution of project_delta mode."""
+    rng = np.random.RandomState(42)
+    client_data = {
+        cid: (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+        for cid in range(2)
+    }
+    test_data = (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+
+    env = FederatedKANEnv(
+        client_datasets=client_data, test_data=test_data, num_clients=2,
+        max_rounds=2, aggregation_mode="project_delta", seed=42,
+    )
+    obs, info = env.reset(seed=42)
+    assert obs.shape == (2, 5)
+
+    obs2, reward, terminated, truncated, step_info = env.step([0, 11])
+    assert obs2.shape == (2, 5)
+    assert np.all(np.isfinite(obs2))
+    assert isinstance(reward, float)
+    assert "config_changes" in step_info
+

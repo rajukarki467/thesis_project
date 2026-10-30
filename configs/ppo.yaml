@@ -33,23 +33,33 @@ actions:
   num_actions_per_client: 12   # 4 x 3 = 12 discrete configurations
 
 # Multi-Objective Calibrated Reward:
-# R_t = 100.0 * (Acc_t - Acc_{t-1}) - β1 * (Mean_Params_t / Baseline_Params) - β2 * (Mean_Latency_t / Baseline_Latency) - β3 * ||a_t - a_{t-1}||_1
+# R_t = Scale * Effective_ΔAcc - β1 * ParamPenalty - β2 * LatencyPenalty - β3 * Smoothness
 reward:
-  accuracy_metric: "accuracy"  # "accuracy" or "macro_f1"
-  scale_acc: 100.0             # Dimensionless scaling factor for delta accuracy: 100.0 * (Acc_t - Acc_{t-1})
-  beta1: 1.5                   # Normalized parameter penalty coefficient
+  eval_split: "val"            # Evaluate on validation split for reward to prevent test set leakage
+  accuracy_metric: "macro_f1"  # Headline metric: "macro_f1" or "balanced_accuracy" or "accuracy"
+  scale_acc: 100.0             # Dimensionless scaling factor for delta macro F1
+  alpha_abs: 0.5               # Small absolute level reward term to guide policy towards higher accuracy
+  transient_downweight: true   # Down-weight round 1 and 2 initialization transients (0.1, 0.5, 1.0)
+  beta1: 2.0                   # Asymmetric parameter penalty coefficient (hard constraint relative to 42,792)
   beta2: 0.1                   # Normalized latency penalty coefficient
   beta3: 0.02                  # Action smoothness regularization coefficient: - β3 * ||a_t - a_{t-1}||_1
   delta_clip: 0.04             # Clip delta accuracy to [-0.04, 0.04] for stable value estimation
   reward_clip_min: -5.0        # Bound R_t in [-5.0, 5.0]
   reward_clip_max: 5.0
   baseline_params: 42792.0     # Reference baseline parameters (8 clients * 5349 params for G=5, k=3)
-  baseline_budget: 42792.0     # Fleet reference baseline budget
+  baseline_budget: 42792.0     # Fleet reference baseline budget B_ref
   baseline_params_per_client: 5349.0
+  target_budget_ratio: 1.0     # Target budget relative to B_ref (e.g. 1.0 for B_ref, 0.85 for 15% reduction)
   baseline_latency: 0.5        # Baseline client step latency (seconds)
   normalize_params: true       # Center parameter cost around baseline budget
-  lambda1: 1.5                 # Compatibility alias for beta1
+  lambda1: 2.0                 # Compatibility alias for beta1
   lambda2: 0.1                 # Compatibility alias for beta2
+
+# Aggregation and Action Space Configuration
+aggregation:
+  mode: "project_delta"        # "project_delta" (recommended), "project_full", "nested_grid", "compatible_actions_only"
+  canonical_gk: [5, 3]
+  compatible_threshold: 0.01
 
 # Heuristic Fallback Controller Configuration (Section 4.2)
 heuristic:
