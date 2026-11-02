@@ -7,7 +7,7 @@
 [![Flower](https://img.shields.io/badge/Flower-1.7.0-yellow.svg)](https://flower.ai/)
 [![WFDB](https://img.shields.io/badge/WFDB-4.3.1-brightgreen.svg)](https://physionet.org/about/software/)
 [![Dataset](https://img.shields.io/badge/Dataset-MIT--BIH%20Arrhythmia-orange.svg)](https://physionet.org/content/mitdb/1.0.0/)
-[![Tests](https://img.shields.io/badge/Tests-31%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-35%20Passing-success.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 An end-to-end research framework implementing **Resource-Adaptive Federated Kolmogorov-Arnold Networks (FedKAN)** for heartbeat arrhythmia classification on the **MIT-BIH Arrhythmia Database**, strictly following the **ANSI/AAMI EC57** international standard.
@@ -61,11 +61,12 @@ The framework integrates:
 11. [Performance vs. Communication Cost Evaluation (Figures C1–C8 & Table)](#performance-vs-communication-cost-evaluation-figures-c1c8--benchmark-table)
 12. [Diagnostic Analysis & Root Cause Findings (Hypotheses H1–H6)](#diagnostic-analysis--root-cause-findings-hypotheses-h1h6)
 13. [Verification & Diagnostic Visualizations (EDA)](#verification--diagnostic-visualizations-eda)
-14. [Installation & Setup](#installation--setup)
-15. [CLI Reproduction Guide](#cli-reproduction-guide)
-16. [Dataset Statistics](#dataset-statistics)
-17. [Project Roadmap & Completed Milestones](#project-roadmap--completed-milestones)
-18. [References](#references)
+14. [Dynamic Resource-Tier Allocation & Straggler/Timeout Handling Verification](#dynamic-resource-tier-allocation--straggler-timeout-handling-verification)
+15. [Installation & Setup](#installation--setup)
+16. [CLI Reproduction Guide](#cli-reproduction-guide)
+17. [Dataset Statistics](#dataset-statistics)
+18. [Project Roadmap & Completed Milestones](#project-roadmap--completed-milestones)
+19. [References](#references)
 
 ---
 
@@ -683,6 +684,58 @@ All intermediate verification plots are generated deterministically and saved in
 
 ---
 
+## Dynamic Resource-Tier Allocation & Straggler/Timeout Handling Verification
+
+### Overview & Motivation
+Real-world federated edge deployments for cardiac arrhythmia monitoring exhibit extreme hardware and communication asymmetry:
+- **Constrained Edge Devices**: Wearable Holter monitors / low-power embedded nodes (e.g., Raspberry Pi) operating over fluctuating wireless links ($1.0 - 2.0\text{ Mbps}$) with high compute latency ($\Delta \tau_{\text{compute}} \approx 0.9 - 2.8\text{ s}$).
+- **High-Performance Compute Nodes**: Edge gateway servers and hospital workstations operating on high-speed local networks ($10.0 - 20.0\text{ Mbps}$) with fast compute capacity ($\Delta \tau_{\text{compute}} \approx 0.1 - 0.4\text{ s}$).
+
+Assigning overly complex KAN spline configurations ($G=10, k=4$) to constrained edge clients causes transmission latencies that exceed round deadlines (`round_timeout_seconds: 3.0` s), blocking aggregation loops and degrading fleet convergence.
+
+### Telemetry Formulation & Multi-Objective PPO Penalty
+1. **5D State Space with Physical Device Constraints**:
+   $$S_i^t = [L_{\text{local}}^i, \text{Var}(x^i), \Delta \tau^i, \text{bw}^i, \kappa^i]$$
+   where total round execution latency is:
+   $$\Delta \tau^i = \Delta \tau_{\text{compute}}^i + \frac{\text{Model\_Size\_MB} \times 8}{\text{bw}^i}$$
+2. **Straggler & Dropout Detection**:
+   Clients whose total round duration exceeds `round_timeout_seconds` (3.0 s) are flagged as `straggler`.
+3. **PPO Penalty Feedback**:
+   Stragglers receive a severe latency penalty in telemetry ($\max(\Delta \tau^i, \text{straggler\_latency\_penalty}) = 6.0\text{ s}$). Through the calibrated reward function:
+   $$R_t = \text{AccTerm} - \beta_1 \cdot \text{ParamPenalty} - \beta_2 \cdot \frac{\overline{\Delta \tau_t}}{\Delta \tau_{\text{base}}} - \beta_3 \cdot \|\mathbf{a}_t - \mathbf{a}_{t-1}\|_1$$
+   the latency penalty $-\lambda_2 \sum \Delta \tau_i^t$ heavily penalizes the agent for assigning heavy models to constrained edge nodes. This drives PPO to converge on assigning coarse $(G, k) \in \{3, 5\} \times \{2, 3\}$ to edge devices and fine $(G, k) \in \{7, 10\} \times \{3, 4\}$ to compute nodes.
+
+### Deadline-Aware Aggregation Strategies
+- **`DeadlineAwareFedAvg` (Flower Strategy)** & Gymnasium Aggregator:
+  - **Option A (`aggregate_available`)**: Drops timed-out stragglers and aggregates available clients if count $\ge \text{min\_available\_clients}$ (default 4).
+  - **Option B (`stale_cache`)**: Employs cached parameters from the previous round $\theta_i^{t-1}$ with a decay penalty ($\text{stale\_decay\_factor} = 0.9$).
+  - **Canonical Spline Projection**: Aggregates heterogeneous weight shapes across active reporting clients using least-squares B-spline projection (`project_spline_weights`) onto canonical knots $(G_{\text{ref}}=5, k_{\text{ref}}=3)$ rather than zero-padding, preventing weight corruption and NaN values even when subsets of clients drop out.
+
+### 5-Round Simulation Verification Trace (`tests/verify_stragglers_and_allocation.py`)
+
+Execution across 8 clients (Clients 0–3: Edge Tier; Clients 4–7: Compute Tier) with active timeouts (`round_timeout_seconds = 3.0` s):
+
+#### Round 5 Client Resource Allocation Table
+| Client ID | Hardware Tier | Assigned $G$ | Assigned $k$ | Active Params | Bandwidth (Mbps) | Latency (s) | Status |
+|:---------:|:-------------:|:------------:|:------------:|:-------------:|:----------------:|:-----------:|:------:|
+| 0 | edge | 3 | 2 | 3,573 | 1.12 | 2.349 | active |
+| 1 | edge | 3 | 2 | 3,573 | 1.50 | 0.937 | active |
+| 2 | edge | 3 | 3 | 4,165 | 1.03 | 2.871 | active |
+| 3 | edge | 3 | 3 | 4,165 | 1.91 | 1.453 | active |
+| 4 | compute | 10 | 4 | 8,901 | 12.59 | 0.257 | active |
+| 5 | compute | 10 | 4 | 8,901 | 16.63 | 0.228 | active |
+| 6 | compute | 10 | 4 | 8,901 | 13.12 | 0.480 | active |
+| 7 | compute | 10 | 4 | 8,901 | 15.20 | 0.268 | active |
+
+#### Quantitative Verification Results
+- **Edge Tier Mean Parameters**: **3,957.8** (coarse configurations $G=3, k \in \{2, 3\}$)
+- **Compute Tier Mean Parameters**: **8,901.0** (fine configurations $G=10, k=4$)
+- **Edge Parameter Reduction**: **55.5%** relative to compute tier ($3,957.8$ vs. $8,901.0$)
+- **Straggler Handling**: When clients encountered transient low bandwidth causing latency $> 3.0$ s (e.g. Round 2 & Round 3), they were marked as `straggler`, received the 6.0 s telemetry penalty, and the server aggregated reporting clients without crashing.
+- **Model Convergence**: Global Test Accuracy achieved **83.99%** with Macro F1 **0.4422** despite simulated communication bottlenecks.
+
+---
+
 ## Installation & Setup
 
 ### Prerequisites
@@ -772,9 +825,15 @@ Executes the multi-objective reward sensitivity sweep ($\lambda_1$ vs $\lambda_2
 ```
 
 ### 8. Run Complete Unit Test Suite
-Runs all 16 unit tests across telemetry trackers, Gymnasium MDP environment, and adaptive controllers:
+Runs all 35 unit tests across telemetry trackers, Gymnasium MDP environment, adaptive controllers, and straggler/timeout verification:
 ```bash
 .venv/bin/pytest tests/ -v
+```
+
+### 9. Verify Resource-Tier Allocation & Straggler Handling
+Executes the standalone 5-round simulation across 8 clients (4 constrained edge, 4 high-compute) with active timeouts and PPO adaptation:
+```bash
+.venv/bin/python tests/verify_stragglers_and_allocation.py
 ```
 
 ---
@@ -850,10 +909,17 @@ Split Breakdown:
   - LaTeX & Markdown Table 4.1 benchmark generated in `results/ablations/`.
   - Comprehensive interactive inspection notebooks `notebooks/04_baseline_analysis.ipynb` and `notebooks/05_ppo_analysis.ipynb`.
 
+- [x] **Phase 9: Dynamic Resource-Tier Profiling, Straggler/Timeout Handling & PPO Verification**
+  - Defined heterogeneous device hardware profiles in `src/environment/telemetry.py` (50% edge tier 1-2 Mbps, high latency; 50% compute tier 10-20 Mbps, fast compute).
+  - Implemented deadline-aware asynchronous FL aggregation strategy (`DeadlineAwareFedAvg`) and fallback handling (Option A: available client aggregation; Option B: stale decayed parameter caching).
+  - Transmitted straggler/dropout penalties directly into 5D telemetry states and multi-objective PPO step reward ($-\lambda_2 \sum \Delta \tau_i^t$).
+  - Verified canonical reference B-spline projection for heterogeneous parameter matrices and missing updates with zero zero-padding and zero weight corruption.
+  - Full end-to-end 5-round verification in `tests/verify_stragglers_and_allocation.py`: edge clients received coarse configurations ($G=3, k \in \{2, 3\}$, 3,573–4,165 params), compute nodes received fine configurations ($G=10, k=4$, 8,901 params), delivering a **55.5% parameter reduction on edge devices** with zero crashes.
+
 ### Active & Upcoming Milestones
-- [ ] **Phase 9: Edge Hardware Emulation & Asymptotic Convergence**
+- [ ] **Phase 10: Long-Horizon Convergence & Embedded Hardware Emulation**
   - Long-horizon federated training convergence (10–50 communication rounds).
-  - Profiling memory footprint, peak RAM, and FLOPs on resource-constrained embedded hardware profiles (Raspberry Pi / Jetson emulation).
+  - Profiling memory footprint, peak RAM, and FLOPs on physical embedded hardware profiles (Raspberry Pi / Jetson emulation).
 
 ---
 

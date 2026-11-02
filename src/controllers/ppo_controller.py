@@ -129,6 +129,87 @@ class PPOLoggingCallback(BaseCallback):
         return True
 
 
+class TierAllocationCallback(BaseCallback):
+    """
+    Diagnostic tracking callback that logs and records average (G, k)
+    assigned to edge-tier vs. compute-tier clients per round.
+    """
+
+    def __init__(
+        self,
+        log_dir: Union[str, Path] = "logs/ppo",
+        log_filename: str = "tier_allocation_log.csv",
+        verbose: int = 1,
+    ):
+        super().__init__(verbose)
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_file = self.log_dir / log_filename
+        self.history: List[Dict[str, Any]] = []
+
+        if not self.log_file.exists():
+            with open(self.log_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "timestep",
+                    "round",
+                    "edge_mean_G",
+                    "edge_mean_k",
+                    "compute_mean_G",
+                    "compute_mean_k",
+                    "stragglers_count",
+                ])
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "tier_allocations" in info:
+                tier_info = info["tier_allocations"]
+                self.history.append(tier_info)
+                e_info = tier_info.get("edge_tier", {})
+                c_info = tier_info.get("compute_tier", {})
+                round_num = int(tier_info.get("round", 0))
+                stragglers = int(info.get("stragglers_count", 0))
+
+                with open(self.log_file, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        self.num_timesteps,
+                        round_num,
+                        f"{e_info.get('mean_G', 0.0):.2f}",
+                        f"{e_info.get('mean_k', 0.0):.2f}",
+                        f"{c_info.get('mean_G', 0.0):.2f}",
+                        f"{c_info.get('mean_k', 0.0):.2f}",
+                        stragglers,
+                    ])
+
+                if self.verbose:
+                    logger.info(
+                        f"[TierAllocationCallback | Round {round_num:02d}] "
+                        f"Edge: G={e_info.get('mean_G', 0.0):.2f}, k={e_info.get('mean_k', 0.0):.2f} | "
+                        f"Compute: G={c_info.get('mean_G', 0.0):.2f}, k={c_info.get('mean_k', 0.0):.2f} | "
+                        f"Stragglers={stragglers}"
+                    )
+        return True
+
+    def get_history(self) -> List[Dict[str, Any]]:
+        return self.history
+
+
+def log_allocation_by_tier(
+    env: Any,
+    actions: Optional[Union[np.ndarray, Sequence[int]]] = None,
+) -> Dict[str, Any]:
+    """
+    Diagnostic helper to query and log tier allocations from an environment.
+    """
+    if hasattr(env, "log_allocation_by_tier"):
+        return env.log_allocation_by_tier(actions)
+    if hasattr(env, "unwrapped") and hasattr(env.unwrapped, "log_allocation_by_tier"):
+        return env.unwrapped.log_allocation_by_tier(actions)
+    return {}
+
+
 class PPOController:
     """
     PPO Meta-Controller for Resource-Adaptive Federated KAN.
@@ -217,8 +298,8 @@ class PPOController:
 
     def _init_policy_bias(self) -> None:
         """
-        Initialize action_net bias towards baseline (action 4: G=5, k=3) and
-        efficient configurations (actions 0..3) to prevent initial over-parameterization.
+        Initialize action_net bias taking into account client hardware tiers.
+        Allocates coarse (G, k) to edge tier and fine (G, k) to compute tier.
         Only applied when use_action_prior is True.
         """
         if self.model is None or not hasattr(self.model, "policy"):
@@ -233,13 +314,30 @@ class PPOController:
                     n_actions = int(self.env.action_space.nvec[0])
                 if n_actions == 12:
                     num_clients = num_logits // 12
+                    edge_indices = set(range(num_clients // 2))
+                    if self.env is not None:
+                        real_env = getattr(self.env, "unwrapped", self.env)
+                        if hasattr(real_env, "telemetry_tracker"):
+                            edge_cids = real_env.telemetry_tracker.get_tier_clients("edge")
+                            edge_indices = set(int(cid) for cid in edge_cids if str(cid).isdigit())
+
                     for c in range(num_clients):
-                        # Actions 0..3: +0.5 (efficient configurations)
-                        b[c * 12 : c * 12 + 4] = 0.5
-                        # Action 4: +1.5 (FedAvg-KAN baseline G=5, k=3)
-                        b[c * 12 + 4] = 1.5
-                        # Actions 5..11: -1.5 (over-parameterized configurations)
-                        b[c * 12 + 5 : (c + 1) * 12] = -1.5
+                        if c in edge_indices:
+                            # Edge tier: incentivize smaller G in {3, 5}, k in {2, 3}
+                            # Action 0: (3, 2), 1: (3, 3), 3: (5, 2), 4: (5, 3)
+                            b[c * 12 : c * 12 + 12] = -1.5
+                            b[c * 12 + 0] = 1.0   # (3, 2)
+                            b[c * 12 + 1] = 1.0   # (3, 3)
+                            b[c * 12 + 3] = 0.5   # (5, 2)
+                            b[c * 12 + 4] = 0.5   # (5, 3)
+                        else:
+                            # Compute tier: incentivize larger G in {7, 10}, k in {3, 4}
+                            # Action 7: (7, 3), 8: (7, 4), 10: (10, 3), 11: (10, 4)
+                            b[c * 12 : c * 12 + 12] = -1.5
+                            b[c * 12 + 7] = 0.5   # (7, 3)
+                            b[c * 12 + 8] = 1.0   # (7, 4)
+                            b[c * 12 + 10] = 1.0  # (10, 3)
+                            b[c * 12 + 11] = 1.2  # (10, 4)
 
     def _load_config(self, config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         """Load YAML configuration or return sensible defaults."""

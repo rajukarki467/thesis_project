@@ -16,8 +16,8 @@ telemetry:
     loss_max: 5.0         # Normalization divisor for local loss: [0.0, 5.0] -> [0.0, 1.0]
     variance_max: 2.0     # Normalization divisor for feature variance: [0.0, 2.0] -> [0.0, 1.0]
     latency_max: 10.0     # Normalization divisor for step latency (seconds): [0.0, 10.0] -> [0.0, 1.0]
-    bandwidth_min: 1.0    # Min bandwidth (Mbps): [1.0, 10.0] -> [0.0, 1.0]
-    bandwidth_max: 10.0   # Max bandwidth (Mbps)
+    bandwidth_min: 1.0    # Min bandwidth (Mbps): [1.0, 20.0] -> [0.0, 1.0]
+    bandwidth_max: 20.0   # Max bandwidth (Mbps) for high-compute nodes
     curvature_max: 2.0    # Normalization divisor for loss curvature: [0.0, 2.0] -> [0.0, 1.0]
   bandwidth_simulation:
     distribution: "uniform"   # "uniform" or "lognormal"
@@ -94,6 +94,11 @@ federated:
   weight_decay: 1.0e-4
   aggregation: "fedavg"
   proximal_mu: 0.0
+  round_timeout_seconds: 3.0   # Round deadline; client latency > timeout triggers straggler penalty
+  straggler_handling: "aggregate_available"  # 'aggregate_available' (Option A) or 'stale_cache' (Option B)
+  min_available_clients: 4     # Min responding clients required to aggregate
+  stale_decay_factor: 0.9      # Decay factor for stale cached updates in Option B
+  straggler_latency_penalty: 6.0  # Telemetry latency reported for stragglers
 
 # Proximal Policy Optimization (PPO) Hyperparameters
 ppo:

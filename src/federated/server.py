@@ -57,6 +57,37 @@ def calculate_round_communication_bytes(
     return 2 * num_participating_clients * model_bytes
 
 
+def compute_transmission_latency(
+    model_size_mb: float,
+    bandwidth_mbps: float,
+    compute_latency: float = 0.0,
+    network_scale: float = 8.0,
+) -> float:
+    """
+    Compute transmission and total execution latency for a client:
+        Transmission Latency = (Model_Size_MB * 8) / max(0.1, bw) + compute_latency
+
+    Parameters
+    ----------
+    model_size_mb : float
+        Memory footprint of model parameters in Megabytes.
+    bandwidth_mbps : float
+        Available client bandwidth in Megabits per second.
+    compute_latency : float
+        Wall-clock local training computation latency in seconds.
+    network_scale : float
+        Multiplier for bits per byte (default 8.0).
+
+    Returns
+    -------
+    float
+        Total round duration in seconds.
+    """
+    bw = max(0.1, float(bandwidth_mbps))
+    comm_time = float((model_size_mb * network_scale) / bw)
+    return float(compute_latency + comm_time)
+
+
 class CentralizedEvaluator:
     """
     Evaluator for the global model on the held-out patient-level test dataset.
@@ -160,8 +191,15 @@ def aggregate_parameters(
     When all clients share identical parameter shapes (fixed G, k), aggregation
     in both modes exactly equals standard FedAvg without precision loss (< 1e-6).
     """
+    if not client_results:
+        if server_parameters is not None:
+            return [p.copy() for p in server_parameters]
+        raise ValueError("Cannot aggregate: client_results is empty.")
+
     total_samples = sum(num_samples for _, num_samples in client_results)
     if total_samples == 0:
+        if server_parameters is not None:
+            return [p.copy() for p in server_parameters]
         raise ValueError("Cannot aggregate: total client samples is 0.")
 
     num_layers = len(client_results[0][0])
@@ -174,16 +212,22 @@ def aggregate_parameters(
         32: (30, 2),
     }
 
-    # Fast path: Check if any parameter tensor has differing shapes across clients
+    # Fast path: Check if all parameter tensors have matching shapes across clients AND match target_bases
     has_shape_mismatch = any(
         any(params[i].shape != client_results[0][0][i].shape for params, _ in client_results)
         for i in range(num_layers)
     )
+    matches_target = all(
+        p.shape[-1] == target_bases
+        for params, _ in client_results
+        for p in params
+        if p.ndim == 3
+    )
 
     mode = str(mode).lower()
 
-    # When all shapes match and mode is project_full (or server_parameters not provided for delta):
-    if not has_shape_mismatch and (mode != "project_delta" or server_parameters is None):
+    # When all shapes match, match target canonical bases, and mode is project_full (or server_parameters not provided for delta):
+    if not has_shape_mismatch and matches_target and (mode != "project_delta" or server_parameters is None):
         first_params = client_results[0][0]
         aggregated = [np.zeros_like(p, dtype=np.float64) for p in first_params]
         for params, n_samples in client_results:
@@ -282,6 +326,147 @@ def aggregate_parameters(
     return [p.astype(first_params[i].dtype) for i, p in enumerate(aggregated)]
 
 
+class DeadlineAwareFedAvg(FedAvg):
+    """
+    Deadline-Aware Asynchronous / Straggler-Resilient FedAvg Strategy.
+
+    Handles stragglers, bandwidth bottlenecks, and communication timeouts:
+    - Measures client transmission latency: Model_Size_MB / bw^i + Δτ_compute^i.
+    - If latency exceeds `round_timeout_seconds`, marks client as a straggler.
+    - Fallback Handling:
+      * Option A ('aggregate_available'): Aggregates reporting clients if count >= min_available_clients.
+      * Option B ('stale_cache'): Uses stale cached parameters from the previous round θ_i^{t-1} with decay penalty.
+    """
+
+    def __init__(
+        self,
+        *args,
+        round_timeout_seconds: float = 3.0,
+        straggler_handling: str = "aggregate_available",
+        min_available_clients: int = 4,
+        stale_decay_factor: float = 0.9,
+        straggler_latency_penalty: float = 6.0,
+        canonical_gk: Tuple[int, int] = (5, 3),
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.round_timeout_seconds = float(round_timeout_seconds)
+        self.straggler_handling = str(straggler_handling).lower()
+        self.min_available_clients = int(min_available_clients)
+        self.stale_decay_factor = float(stale_decay_factor)
+        self.straggler_latency_penalty = float(straggler_latency_penalty)
+        self.canonical_gk = canonical_gk
+
+        # Client parameter cache for Option B (stale caching)
+        self.client_cache: Dict[str, Tuple[List[np.ndarray], int]] = {}
+        self.cached_server_parameters: Optional[List[np.ndarray]] = None
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: List[Tuple[ClientProxy, FitRes]],
+        failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
+    ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
+        """
+        Aggregate client model updates with deadline awareness and straggler fallback.
+        """
+        if not results:
+            if self.cached_server_parameters is not None:
+                return ndarrays_to_parameters(self.cached_server_parameters), {
+                    "active_clients": 0,
+                    "stragglers": 0,
+                    "status": "all_dropped_fallback_cached",
+                }
+            return None, {}
+
+        active_results: List[Tuple[ClientProxy, FitRes]] = []
+        straggler_proxies: List[ClientProxy] = []
+
+        for client_proxy, fit_res in results:
+            cid = str(getattr(client_proxy, "cid", client_proxy))
+            m = fit_res.metrics or {}
+            c_lat = float(m.get("execution_latency", m.get("round_latency", 0.5)))
+            bw = float(m.get("bandwidth", 5.0))
+            p_count = sum(p.size for p in parameters_to_ndarrays(fit_res.parameters))
+            model_size_mb = (p_count * 4) / (1024.0 ** 2)
+            total_lat = compute_transmission_latency(
+                model_size_mb=model_size_mb,
+                bandwidth_mbps=bw,
+                compute_latency=c_lat,
+            )
+
+            if total_lat > self.round_timeout_seconds:
+                straggler_proxies.append(client_proxy)
+            else:
+                active_results.append((client_proxy, fit_res))
+                # Update cache for successful reporting
+                self.client_cache[cid] = (
+                    parameters_to_ndarrays(fit_res.parameters),
+                    fit_res.num_examples,
+                )
+
+        num_active = len(active_results)
+        num_stragglers = len(straggler_proxies)
+
+        client_updates: List[Tuple[List[np.ndarray], int]] = []
+
+        if self.straggler_handling == "stale_cache":
+            # Include active results
+            for _, fit_res in active_results:
+                client_updates.append((
+                    parameters_to_ndarrays(fit_res.parameters),
+                    fit_res.num_examples,
+                ))
+            # Include stale cached updates for stragglers with decay penalty
+            for client_proxy in straggler_proxies:
+                cid = str(getattr(client_proxy, "cid", client_proxy))
+                if cid in self.client_cache:
+                    cached_params, cached_n = self.client_cache[cid]
+                    decayed_n = max(1, int(cached_n * self.stale_decay_factor))
+                    client_updates.append((cached_params, decayed_n))
+        else:
+            # Option A: aggregate available active clients if >= min_available_clients
+            if num_active >= self.min_available_clients:
+                for _, fit_res in active_results:
+                    client_updates.append((
+                        parameters_to_ndarrays(fit_res.parameters),
+                        fit_res.num_examples,
+                    ))
+            elif self.client_cache:
+                # Fallback to cached clients if active < min_available_clients
+                for cid, (cached_params, cached_n) in self.client_cache.items():
+                    client_updates.append((cached_params, cached_n))
+            else:
+                for _, fit_res in results:
+                    client_updates.append((
+                        parameters_to_ndarrays(fit_res.parameters),
+                        fit_res.num_examples,
+                    ))
+
+        if not client_updates:
+            if self.cached_server_parameters is not None:
+                return ndarrays_to_parameters(self.cached_server_parameters), {
+                    "active_clients": num_active,
+                    "stragglers": num_stragglers,
+                }
+            return None, {}
+
+        aggregated_ndarrays = aggregate_parameters(
+            client_results=client_updates,
+            canonical_gk=self.canonical_gk,
+            server_parameters=self.cached_server_parameters,
+        )
+        self.cached_server_parameters = [p.copy() for p in aggregated_ndarrays]
+
+        agg_metrics: Dict[str, Scalar] = {
+            "active_clients": num_active,
+            "stragglers": num_stragglers,
+            "timeout_seconds": self.round_timeout_seconds,
+            "strategy": "DeadlineAwareFedAvg",
+        }
+        return ndarrays_to_parameters(aggregated_ndarrays), agg_metrics
+
+
 def run_federated_simulation(
     model: nn.Module,
     client_datasets: Dict[Union[int, str], Tuple[np.ndarray, np.ndarray]],
@@ -298,6 +483,12 @@ def run_federated_simulation(
     device: Optional[Union[str, torch.device]] = None,
     verbose: bool = True,
     checkpoint_metric: str = "macro_f1",
+    round_timeout_seconds: Optional[float] = None,
+    straggler_handling: str = "aggregate_available",
+    min_available_clients: Optional[int] = None,
+    stale_decay_factor: float = 0.9,
+    straggler_latency_penalty: float = 6.0,
+    hardware_profiles: Optional[Dict[Union[int, str], Any]] = None,
 ) -> Dict[str, Any]:
     """
     Execute complete end-to-end Federated Learning simulation.
@@ -306,6 +497,7 @@ def run_federated_simulation(
     - Strategy: 'fedavg' or 'fedprox'
     - Telemetry tracking across clients
     - Communication volume calculation (MB)
+    - Deadline awareness and straggler/timeout handling (Option A and Option B)
     - Centralized validation evaluation per round (Loss, Accuracy, Macro F1, Balanced Accuracy)
     - Checkpoint selection on validation split only, touching test split for reporting
     - Centralized test evaluation per round (Loss, Accuracy, Macro F1, Balanced Accuracy)
@@ -317,6 +509,7 @@ def run_federated_simulation(
     """
     client_ids = sorted(client_datasets.keys())
     num_clients = len(client_ids)
+    min_avail = int(min_available_clients if min_available_clients is not None else max(1, num_clients // 2))
     strategy_name = strategy_name.lower()
     actual_mu = proximal_mu if strategy_name == "fedprox" else 0.0
 
@@ -350,6 +543,7 @@ def run_federated_simulation(
     # Instantiate local clients
     clients: Dict[Union[int, str], FlowerECGClient] = {}
     for cid in client_ids:
+        c_prof = hardware_profiles.get(cid, hardware_profiles.get(str(cid), None)) if hardware_profiles else None
         clients[cid] = FlowerECGClient(
             client_id=cid,
             model=copy.deepcopy(model),
@@ -361,9 +555,11 @@ def run_federated_simulation(
             weight_decay=weight_decay,
             proximal_mu=actual_mu,
             device=device,
+            hardware_profile=c_prof,
         )
 
     p_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    model_size_mb = float((p_count * 4) / (1024.0 ** 2))
     params_up_per_round = num_clients * p_count
     params_down_per_round = num_clients * p_count
     params_per_round = params_up_per_round + params_down_per_round
@@ -381,6 +577,9 @@ def run_federated_simulation(
     best_round = 0
     best_parameters = copy.deepcopy(current_parameters)
     best_val_metrics = copy.deepcopy(init_val_metrics)
+
+    # Stale cache for Option B fallback
+    client_cache: Dict[Union[int, str], Tuple[List[np.ndarray], int]] = {}
 
     # Record initial state
     init_record = {
@@ -418,6 +617,8 @@ def run_federated_simulation(
         })
     history.append(init_record)
 
+    from src.environment.telemetry import BandwidthSimulator
+
     # Federated Rounds Loop
     for r in range(1, num_rounds + 1):
         round_fit_results: List[Tuple[List[np.ndarray], int]] = []
@@ -429,17 +630,91 @@ def run_federated_simulation(
             "server_round": r,
         }
 
+        # Sample bandwidths for this round
+        bw_sim = BandwidthSimulator(seed=r * 100 + num_clients)
+        client_profs = [clients[cid].hardware_profile for cid in client_ids]
+        has_profs = any(p is not None for p in client_profs)
+        bw_clients = (
+            bw_sim.sample(num_clients, profiles=client_profs)
+            if has_profs
+            else bw_sim.sample(num_clients)
+        )
+
+        straggler_flags: List[bool] = []
+        comm_times: List[float] = []
+
         # Local client updates
-        for cid in client_ids:
+        for idx, cid in enumerate(client_ids):
             client = clients[cid]
             updated_params, n_samples, metrics = client.fit(
                 parameters=current_parameters, config=config
             )
+
+            c_bw = float(bw_clients[idx])
+            metrics["bandwidth"] = c_bw
+            comp_lat = float(metrics.get("execution_latency", 0.5))
+
+            # Transmission latency: (Model_Size_MB * 8) / bw + Δτ_compute
+            total_lat = compute_transmission_latency(
+                model_size_mb=model_size_mb,
+                bandwidth_mbps=c_bw,
+                compute_latency=comp_lat,
+            )
+            comm_time = total_lat - comp_lat
+            comm_times.append(comm_time)
+
+            if round_timeout_seconds is not None and total_lat > round_timeout_seconds:
+                # Exceeded timeout deadline: mark as straggler
+                is_straggler = True
+                status = "straggler"
+                # Transmit straggler penalty into telemetry
+                metrics["execution_latency"] = max(total_lat, straggler_latency_penalty)
+            else:
+                is_straggler = False
+                status = "active"
+                metrics["execution_latency"] = total_lat
+
+            metrics["is_straggler"] = is_straggler
+            metrics["status"] = status
+            straggler_flags.append(is_straggler)
+
             round_fit_results.append((updated_params, n_samples))
             round_telemetries.append(metrics)
 
-        # Server aggregation
-        current_parameters = aggregate_parameters(round_fit_results)
+            if not is_straggler:
+                client_cache[cid] = (updated_params, n_samples)
+
+        # Server aggregation with straggler handling
+        if round_timeout_seconds is not None:
+            active_updates: List[Tuple[List[np.ndarray], int]] = []
+            if straggler_handling == "stale_cache":
+                for idx, (res, is_s) in enumerate(zip(round_fit_results, straggler_flags)):
+                    cid = client_ids[idx]
+                    if not is_s:
+                        active_updates.append(res)
+                    elif cid in client_cache:
+                        p_old, n_old = client_cache[cid]
+                        decayed_n = max(1, int(n_old * stale_decay_factor))
+                        active_updates.append((p_old, decayed_n))
+            else:
+                # Option A: aggregate available clients
+                active_updates = [
+                    res for res, is_s in zip(round_fit_results, straggler_flags) if not is_s
+                ]
+                if len(active_updates) < min_avail and client_cache:
+                    for cid, (p_old, n_old) in client_cache.items():
+                        active_updates.append((p_old, n_old))
+
+            if len(active_updates) >= min_avail or len(active_updates) > 0:
+                current_parameters = aggregate_parameters(
+                    active_updates,
+                    canonical_gk=(model.grid_size, model.spline_order) if hasattr(model, "grid_size") else (5, 3),
+                    server_parameters=current_parameters,
+                )
+            # If active_updates is empty, current_parameters is preserved unchanged
+        else:
+            current_parameters = aggregate_parameters(round_fit_results)
+
         cumulative_comm_mb += mb_per_round
 
         # Global validation evaluation (primary for checkpoint selection)
@@ -465,20 +740,12 @@ def run_federated_simulation(
         mean_latency = float(np.mean([m["execution_latency"] for m in round_telemetries]))
         mean_local_loss = float(np.mean([m["local_loss"] for m in round_telemetries]))
         mean_inp_var = float(np.mean([m["input_variance"] for m in round_telemetries]))
+        num_stragglers = sum(1 for is_s in straggler_flags if is_s)
 
         cum_params += params_per_round
         cum_bytes += bytes_per_round
         cum_MB = float(cum_bytes / (1024.0 ** 2))
 
-        # Simulated communication times across clients
-        from src.environment.telemetry import BandwidthSimulator
-        bw_sim = BandwidthSimulator(seed=r * 100 + num_clients)
-        bw_clients = bw_sim.sample(num_clients)
-        comm_times = []
-        for cid_idx in range(num_clients):
-            c_bytes = float(2 * p_count * 4)
-            c_time = (c_bytes * 8.0) / (bw_clients[cid_idx] * 1e6)
-            comm_times.append(c_time)
         est_comm_time_s = float(max(comm_times)) if comm_times else 0.0
         est_comm_time_sum_s = float(sum(comm_times)) if comm_times else 0.0
         cum_comm_time_s += est_comm_time_s
@@ -507,6 +774,7 @@ def run_federated_simulation(
             "mean_client_latency": mean_latency,
             "mean_client_loss": mean_local_loss,
             "mean_input_variance": mean_inp_var,
+            "stragglers_count": num_stragglers,
             "per_class_metrics": test_metrics["class_metrics"],
             "confusion_matrix": test_metrics.get("confusion_matrix", []),
         }

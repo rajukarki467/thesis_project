@@ -6,9 +6,13 @@ federated:
   fraction_evaluate: 1.0
   min_fit_clients: 8
   min_evaluate_clients: 8
-  min_available_clients: 8
+  min_available_clients: 4     # Minimum responding clients needed to proceed
   aggregation: "fedavg"        # 'fedavg' or 'fedprox'
   proximal_mu: 0.01            # FedProx regularization parameter mu
+  round_timeout_seconds: 3.0   # Round deadline in seconds; clients exceeding deadline become stragglers
+  straggler_handling: "aggregate_available"  # 'aggregate_available' (Option A) or 'stale_cache' (Option B)
+  stale_decay_factor: 0.9      # Stale parameter decay penalty for Option B
+  straggler_latency_penalty: 6.0  # Telemetry latency penalty (s) assigned to timed-out stragglers
 
 client:
   local_epochs: 3

@@ -40,9 +40,17 @@ import torch
 import torch.nn as nn
 import yaml
 
-from src.environment.telemetry import TelemetryTracker
+from src.environment.telemetry import (
+    ClientHardwareProfile,
+    TelemetryTracker,
+    create_heterogeneous_profiles,
+)
 from src.federated.client import FlowerECGClient
-from src.federated.server import CentralizedEvaluator, aggregate_parameters
+from src.federated.server import (
+    CentralizedEvaluator,
+    aggregate_parameters,
+    compute_transmission_latency,
+)
 from src.models.fastkan_model import FastKANClassifier, project_spline_weights
 from src.partition import dirichlet_partition
 from src.utils.reproducibility import set_seed
@@ -288,16 +296,30 @@ class FederatedKANEnv(gym.Env):
             else:
                 self.client_variances[cid] = 1.0
 
-        # 4. Initialize Telemetry Tracker
+        # 4. Initialize Hardware Profiles and Telemetry Tracker
         norm_bounds = telemetry_cfg.get("normalization", {})
         bw_sim_cfg = telemetry_cfg.get("bandwidth_simulation", {})
+        edge_ratio = float(bw_sim_cfg.get("edge_ratio", 0.5))
+        self.hardware_profiles = create_heterogeneous_profiles(
+            self.client_ids, edge_ratio=edge_ratio
+        )
+
         self.telemetry_tracker = TelemetryTracker(
             client_ids=self.client_ids,
             client_variances=self.client_variances,
             normalization_bounds=norm_bounds,
             bandwidth_cfg=bw_sim_cfg,
+            hardware_profiles=self.hardware_profiles,
             seed=self.global_seed,
         )
+
+        # Asynchronous / Deadline-aware aggregation parameters
+        self.round_timeout_seconds = float(fed_cfg.get("round_timeout_seconds", 3.0))
+        self.straggler_handling = str(fed_cfg.get("straggler_handling", "aggregate_available")).lower()
+        self.min_available_clients = int(fed_cfg.get("min_available_clients", max(1, self.num_clients // 2)))
+        self.stale_decay_factor = float(fed_cfg.get("stale_decay_factor", 0.9))
+        self.straggler_latency_penalty = float(fed_cfg.get("straggler_latency_penalty", 6.0))
+        self.client_cache: Dict[int, Tuple[List[np.ndarray], int]] = {}
 
         # 5. Initialize Evaluators (val evaluator for reward, test evaluator strictly for evaluation)
         ref_model = FastKANClassifier(
@@ -497,8 +519,9 @@ class FederatedKANEnv(gym.Env):
             else (init_loss, init_metrics)
         )
 
-        # Instantiate clients with initial reference architecture
+        # Instantiate clients with initial reference architecture and hardware profiles
         self.clients = {}
+        self.client_cache = {}
         for cid in self.client_ids:
             c_model = FastKANClassifier(
                 layers_hidden=self.layers_hidden,
@@ -517,6 +540,7 @@ class FederatedKANEnv(gym.Env):
                 weight_decay=self.weight_decay,
                 proximal_mu=self.proximal_mu,
                 device=self.device,
+                hardware_profile=self.hardware_profiles[str(cid)],
             )
 
         # Reset telemetry tracker
@@ -603,6 +627,7 @@ class FederatedKANEnv(gym.Env):
 
         client_params_list: List[int] = []
         client_latencies_list: List[float] = []
+        straggler_flags: List[bool] = []
         chosen_configs: List[Tuple[int, int]] = []
 
         # 1. Dispatch heterogeneous (G_i, k_i) configurations and train locally
@@ -654,12 +679,42 @@ class FederatedKANEnv(gym.Env):
                 "local_epochs": self.local_epochs,
                 "proximal_mu": self.proximal_mu,
                 "server_round": round_num,
+                "hardware_profile": self.hardware_profiles[str(cid)],
             }
             client_params, n_samples, metrics = client.fit(
                 parameters=client.get_parameters(), config=fit_config
             )
 
-            client_latencies_list.append(float(metrics["execution_latency"]))
+            # Compute transmission and round latency: Model_Size_MB / bw^i + compute_latency
+            bw_i = float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth)
+            c_bytes = float(active_params * 4)  # Float32 parameter bytes
+            model_size_mb = float(c_bytes / (1024.0 ** 2))
+            compute_lat = float(metrics["execution_latency"])
+
+            total_lat = compute_transmission_latency(
+                model_size_mb=model_size_mb,
+                bandwidth_mbps=bw_i,
+                compute_latency=compute_lat,
+            )
+
+            # Deadline-aware timeout check: mark stragglers
+            if self.round_timeout_seconds is not None and total_lat > self.round_timeout_seconds:
+                is_straggler = True
+                status = "straggler"
+                # Transmit straggler penalty into telemetry and reward
+                effective_lat = max(total_lat, self.straggler_latency_penalty)
+            else:
+                is_straggler = False
+                status = "active"
+                effective_lat = total_lat
+
+            metrics["is_straggler"] = is_straggler
+            metrics["status"] = status
+            metrics["execution_latency"] = effective_lat
+            metrics["total_latency"] = total_lat
+            metrics["bandwidth"] = bw_i
+            straggler_flags.append(is_straggler)
+            client_latencies_list.append(effective_lat)
             round_metrics[cid] = metrics
 
             use_delta = self.aggregation_mode in ("project_delta", "nested_grid", "compatible_actions_only")
@@ -690,23 +745,51 @@ class FederatedKANEnv(gym.Env):
                 resampled_params = client.get_parameters()
                 client_updates.append((resampled_params, n_samples))
 
-        # 2. Server Aggregation
-        use_delta = self.aggregation_mode in ("project_delta", "nested_grid", "compatible_actions_only")
-        if use_delta:
-            total_samples = sum(n for _, n in client_updates)
-            delta_avg = [np.zeros_like(p, dtype=np.float64) for p in self.server_parameters]
-            for delta_p, n_s in client_updates:
-                w = float(n_s) / float(total_samples)
-                for i, dp in enumerate(delta_p):
-                    delta_avg[i] += w * dp.astype(np.float64)
-            self.server_parameters = [
-                (sp.astype(np.float64) + da).astype(sp.dtype)
-                for sp, da in zip(self.server_parameters, delta_avg)
-            ]
+        # 2. Server Aggregation with Straggler & Deadline Fallback
+        active_indices = [idx for idx, is_s in enumerate(straggler_flags) if not is_s]
+        if self.straggler_handling == "stale_cache":
+            effective_updates = []
+            for idx in range(self.num_clients):
+                cid = self.client_ids[idx]
+                if not straggler_flags[idx]:
+                    effective_updates.append(client_updates[idx])
+                    self.client_cache[cid] = client_updates[idx]
+                elif cid in self.client_cache:
+                    cached_up, cached_n = self.client_cache[cid]
+                    decayed_n = max(1, int(cached_n * self.stale_decay_factor))
+                    effective_updates.append((cached_up, decayed_n))
         else:
-            self.server_parameters = aggregate_parameters(
-                client_updates, canonical_gk=(self.ref_grid_size, self.ref_spline_order)
-            )
+            # Option A (aggregate_available):
+            if len(active_indices) >= self.min_available_clients:
+                effective_updates = [client_updates[idx] for idx in active_indices]
+                for idx in active_indices:
+                    cid = self.client_ids[idx]
+                    self.client_cache[cid] = client_updates[idx]
+            elif self.client_cache:
+                effective_updates = [self.client_cache[cid] for cid in self.client_cache]
+            else:
+                effective_updates = client_updates
+
+        if effective_updates:
+            use_delta = self.aggregation_mode in ("project_delta", "nested_grid", "compatible_actions_only")
+            if use_delta:
+                total_samples = sum(n for _, n in effective_updates)
+                if total_samples > 0:
+                    delta_avg = [np.zeros_like(p, dtype=np.float64) for p in self.server_parameters]
+                    for delta_p, n_s in effective_updates:
+                        w = float(n_s) / float(total_samples)
+                        for i, dp in enumerate(delta_p):
+                            delta_avg[i] += w * dp.astype(np.float64)
+                    self.server_parameters = [
+                        (sp.astype(np.float64) + da).astype(sp.dtype)
+                        for sp, da in zip(self.server_parameters, delta_avg)
+                    ]
+            else:
+                self.server_parameters = aggregate_parameters(
+                    effective_updates,
+                    canonical_gk=(self.ref_grid_size, self.ref_spline_order),
+                    server_parameters=self.server_parameters,
+                )
 
         # 3. Global Evaluation (validation for reward, test strictly for evaluation)
         eval_loss, eval_metrics = self.evaluator.evaluate(self.server_parameters)
@@ -880,13 +963,104 @@ class FederatedKANEnv(gym.Env):
                 "total_reward": reward,
             },
             "actions": [
-                {"client_id": cid, "action_idx": int(actions[cid]), "G": g, "k": k}
+                {
+                    "client_id": cid,
+                    "action_idx": int(actions[cid]),
+                    "G": g,
+                    "k": k,
+                    "active_params": client_params_list[cid],
+                    "hardware_tier": self.hardware_profiles[str(cid)].tier,
+                    "bandwidth": float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth),
+                    "latency": float(client_latencies_list[cid]),
+                    "status": round_metrics[cid]["status"],
+                    "is_straggler": round_metrics[cid]["is_straggler"],
+                }
                 for cid, (g, k) in enumerate(chosen_configs)
             ],
+            "stragglers_count": int(sum(straggler_flags)),
+            "tier_allocations": self.log_allocation_by_tier(actions),
             "telemetry_summary": self.telemetry_tracker.get_summary(),
         }
 
         return new_obs, reward, terminated, truncated, info
+
+    def log_allocation_by_tier(
+        self,
+        actions: Optional[Union[np.ndarray, Sequence[int]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Diagnostic tracking callback that records average G and k assigned to
+        edge-tier vs compute-tier clients per round.
+
+        Parameters
+        ----------
+        actions : Optional[Union[np.ndarray, Sequence[int]]]
+            Action indices for all clients. If None, uses self.prev_actions.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Allocation metrics partitioned by hardware tier.
+        """
+        if actions is None:
+            actions = self.prev_actions
+        if actions is None:
+            actions = np.zeros(self.num_clients, dtype=np.int64)
+
+        actions = np.asarray(actions, dtype=np.int64).flatten()
+        edge_cids = self.telemetry_tracker.get_tier_clients("edge")
+        compute_cids = self.telemetry_tracker.get_tier_clients("compute")
+
+        edge_gs, edge_ks, edge_params = [], [], []
+        comp_gs, comp_ks, comp_params = [], [], []
+
+        for cid_str in edge_cids:
+            cid = int(cid_str)
+            act_idx = int(actions[cid])
+            g, k = self.action_tuples[act_idx] if 0 <= act_idx < len(self.action_tuples) else ACTION_TUPLES[act_idx]
+            edge_gs.append(g)
+            edge_ks.append(k)
+            # Param count approximation for FastKAN: num_layers * hidden * (G + k)
+            edge_params.append(g * k)
+
+        for cid_str in compute_cids:
+            cid = int(cid_str)
+            act_idx = int(actions[cid])
+            g, k = self.action_tuples[act_idx] if 0 <= act_idx < len(self.action_tuples) else ACTION_TUPLES[act_idx]
+            comp_gs.append(g)
+            comp_ks.append(k)
+            comp_params.append(g * k)
+
+        summary = {
+            "round": self.current_round,
+            "edge_tier": {
+                "client_ids": edge_cids,
+                "mean_G": float(np.mean(edge_gs)) if edge_gs else 0.0,
+                "mean_k": float(np.mean(edge_ks)) if edge_ks else 0.0,
+                "min_G": int(min(edge_gs)) if edge_gs else 0,
+                "max_G": int(max(edge_gs)) if edge_gs else 0,
+                "min_k": int(min(edge_ks)) if edge_ks else 0,
+                "max_k": int(max(edge_ks)) if edge_ks else 0,
+                "configs": [(g, k) for g, k in zip(edge_gs, edge_ks)],
+            },
+            "compute_tier": {
+                "client_ids": compute_cids,
+                "mean_G": float(np.mean(comp_gs)) if comp_gs else 0.0,
+                "mean_k": float(np.mean(comp_ks)) if comp_ks else 0.0,
+                "min_G": int(min(comp_gs)) if comp_gs else 0,
+                "max_G": int(max(comp_gs)) if comp_gs else 0,
+                "min_k": int(min(comp_ks)) if comp_ks else 0,
+                "max_k": int(max(comp_ks)) if comp_ks else 0,
+                "configs": [(g, k) for g, k in zip(comp_gs, comp_ks)],
+            },
+        }
+
+        logger.info(
+            f"[Round {self.current_round:02d} Allocation by Tier] "
+            f"Edge (N={len(edge_cids)}): mean_G={summary['edge_tier']['mean_G']:.1f}, mean_k={summary['edge_tier']['mean_k']:.1f} | "
+            f"Compute (N={len(compute_cids)}): mean_G={summary['compute_tier']['mean_G']:.1f}, mean_k={summary['compute_tier']['mean_k']:.1f}"
+        )
+        return summary
 
     def render(self, mode: str = "ansi") -> Optional[str]:
         """Render the current environment state."""

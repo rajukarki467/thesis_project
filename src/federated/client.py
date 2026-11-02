@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from src.environment.telemetry import ClientHardwareProfile
 from src.federated.fedprox import FedProxCriterion
 from src.utils.metrics import compute_metrics
 
@@ -79,11 +80,13 @@ class FlowerECGClient(NumPyClient):
         weight_decay: float = 1e-4,
         proximal_mu: float = 0.0,
         device: Optional[Union[str, torch.device]] = None,
+        hardware_profile: Optional[ClientHardwareProfile] = None,
     ):
         super().__init__()
         self.client_id = str(client_id)
         self.device = torch.device(device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model = model.to(self.device)
+        self.hardware_profile = hardware_profile
 
         self.batch_size = int(batch_size)
         self.epochs = int(epochs)
@@ -219,8 +222,20 @@ class FlowerECGClient(NumPyClient):
                 total_loss_accum += base_loss_val
                 total_batches += 1
 
-        latency = time.perf_counter() - start_time
+        measured_latency = time.perf_counter() - start_time
         avg_local_loss = float(total_loss_accum / max(1, total_batches))
+
+        # Calculate compute latency adjusted by client hardware profile constraints
+        prof = config.get("hardware_profile", self.hardware_profile)
+        if prof is not None:
+            p_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            complexity_factor = float(p_count) / 5349.0
+            compute_latency = float(
+                prof.base_latency * complexity_factor
+                + measured_latency * prof.compute_time_multiplier
+            )
+        else:
+            compute_latency = float(measured_latency)
 
         # Evaluate on local validation set
         val_loss, val_acc, val_f1 = self._evaluate_local()
@@ -229,7 +244,8 @@ class FlowerECGClient(NumPyClient):
         metrics = {
             "client_id": self.client_id,
             "local_loss": avg_local_loss,
-            "execution_latency": float(latency),
+            "execution_latency": float(compute_latency),
+            "measured_wall_latency": float(measured_latency),
             "input_variance": float(self.input_variance),
             "val_loss": float(val_loss),
             "val_accuracy": float(val_acc),
