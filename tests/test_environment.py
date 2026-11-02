@@ -94,13 +94,14 @@ def test_client_telemetry_normalization_bounds():
     telemetry = ClientTelemetry(
         client_id="client_1",
         input_variance=0.9,
+        label_entropy=0.8,
         normalization_bounds={
             "loss_max": 5.0,
             "variance_max": 2.0,
             "latency_max": 10.0,
             "bandwidth_min": 1.0,
             "bandwidth_max": 10.0,
-            "curvature_max": 2.0,
+            "entropy_max": 1.6094,
         },
     )
     # Feed values within nominal range
@@ -109,17 +110,18 @@ def test_client_telemetry_normalization_bounds():
 
     assert vec.shape == (5,)
     assert vec.dtype == np.float32
-    assert 0.0 <= vec[0] <= 1.0  # loss: 2.5 / 5.0 = 0.5
-    assert 0.0 <= vec[1] <= 1.0  # var: 0.9 / 2.0 = 0.45
-    assert 0.0 <= vec[2] <= 1.0  # lat: 5.0 / 10.0 = 0.5
-    assert 0.0 <= vec[3] <= 1.0  # bw: (5.5 - 1.0) / 9.0 = 0.5
-    assert 0.0 <= vec[4] <= 1.0  # curvature
+    assert -1.0 <= vec[0] <= 1.0  # loss: 2.5 / 5.0 = 0.5 -> 2*0.5 - 1 = 0.0
+    assert pytest.approx(vec[0], abs=1e-5) == 0.0
+    assert -1.0 <= vec[1] <= 1.0  # var: 0.9 / 2.0 = 0.45 -> 2*0.45 - 1 = -0.1
+    assert -1.0 <= vec[2] <= 1.0  # lat: 5.0 / 10.0 = 0.5 -> 0.0
+    assert -1.0 <= vec[3] <= 1.0  # bw: (5.5 - 1.0) / 9.0 = 0.5 -> 0.0
+    assert -1.0 <= vec[4] <= 1.0  # label entropy in [-1, 1]
 
     # Test extreme overflow clipping
     telemetry.update(local_loss=10.0, latency=20.0, bandwidth=15.0)
     overflow_vec = telemetry.get_state_vector(normalize=True)
     assert np.all(overflow_vec <= 1.0)
-    assert np.all(overflow_vec >= 0.0)
+    assert np.all(overflow_vec >= -1.0)
 
 
 # ==============================================================================
@@ -129,11 +131,17 @@ def test_client_telemetry_normalization_bounds():
 def test_telemetry_tracker_global_matrix():
     client_ids = [0, 1, 2, 3]
     variances = {0: 0.8, 1: 1.0, 2: 1.2, 3: 0.9}
-    tracker = TelemetryTracker(client_ids=client_ids, client_variances=variances, seed=42)
+    entropies = {0: 0.0, 1: 0.5, 2: 1.0, 3: 1.6094}
+    tracker = TelemetryTracker(
+        client_ids=client_ids,
+        client_variances=variances,
+        client_entropies=entropies,
+        seed=42,
+    )
 
     init_state = tracker.reset(initial_losses=1.5)
     assert init_state.shape == (4, 5)
-    assert np.all(init_state >= 0.0) and np.all(init_state <= 1.0)
+    assert np.all(init_state >= -1.0) and np.all(init_state <= 1.0)
 
     # Update round
     round_metrics = {
@@ -141,11 +149,12 @@ def test_telemetry_tracker_global_matrix():
     }
     updated_state = tracker.update_round(round_metrics)
     assert updated_state.shape == (4, 5)
-    assert np.all(updated_state >= 0.0) and np.all(updated_state <= 1.0)
+    assert np.all(updated_state >= -1.0) and np.all(updated_state <= 1.0)
 
     summary = tracker.get_summary()
     assert summary["num_clients"] == 4
     assert len(summary["feature_names"]) == 5
+    assert "label_entropy" in summary["feature_names"]
     assert summary["total_latency"] > 0
 
 
@@ -213,7 +222,7 @@ def test_environment_spaces(test_env):
 def test_environment_lifecycle_and_reward(test_env):
     obs, info = test_env.reset(seed=42)
     assert obs.shape == (4, 5)
-    assert np.all(obs >= 0.0) and np.all(obs <= 1.0)
+    assert np.all(obs >= -1.0) and np.all(obs <= 1.0)
     assert info["round"] == 0
     assert "global_accuracy" in info
 
@@ -222,7 +231,7 @@ def test_environment_lifecycle_and_reward(test_env):
     next_obs, reward, terminated, truncated, step_info = test_env.step(actions)
 
     assert next_obs.shape == (4, 5)
-    assert np.all(next_obs >= 0.0) and np.all(next_obs <= 1.0)
+    assert np.all(next_obs >= -1.0) and np.all(next_obs <= 1.0)
     assert isinstance(reward, float)
     assert not terminated
     assert not truncated
@@ -230,7 +239,8 @@ def test_environment_lifecycle_and_reward(test_env):
     # Verify Equation (7): R_t = ΔAcc - λ1 * Σ Params - λ2 * Σ Latency
     rc = step_info["reward_components"]
     expected_reward = rc["delta_accuracy"] - rc["param_penalty"] - rc["latency_penalty"]
-    assert pytest.approx(reward, abs=1e-6) == expected_reward
+    assert pytest.approx(rc["raw_reward"], abs=1e-6) == expected_reward
+    assert pytest.approx(reward, abs=1e-6) == np.clip(expected_reward, test_env.reward_clip_min, test_env.reward_clip_max)
 
     # Verify active parameter counts are positive
     assert step_info["total_parameters"] > 0
@@ -397,5 +407,156 @@ def test_communication_logging_fixed_fleet():
         prev_cum_params = step_info["cum_params"]
         prev_cum_bytes = step_info["cum_bytes"]
         prev_cum_mb = step_info["cum_MB"]
+
+
+# ==============================================================================
+# 7. Non-IID Label Entropy & Accuracy-Constrained Reward Tests
+# ==============================================================================
+
+def test_compute_label_entropy():
+    """Verify Shannon label entropy and its non-IID normalization to [-1, 1]."""
+    from src.environment.telemetry import compute_label_entropy
+
+    # Monoculture (extreme non-IID skew: single class)
+    mono_labels = np.zeros(100, dtype=np.int64)
+    h_mono = compute_label_entropy(mono_labels, num_classes=5)
+    assert h_mono == 0.0
+
+    # Uniform distribution across 5 classes (IID)
+    uniform_labels = np.array([0, 1, 2, 3, 4] * 20, dtype=np.int64)
+    h_uniform = compute_label_entropy(uniform_labels, num_classes=5)
+    assert pytest.approx(h_uniform, abs=1e-4) == np.log(5.0)
+
+    # Skewed Dirichlet-like distribution
+    skewed_labels = np.array([0] * 70 + [1] * 20 + [2] * 10, dtype=np.int64)
+    h_skew = compute_label_entropy(skewed_labels, num_classes=5)
+    assert 0.0 < h_skew < np.log(5.0)
+
+    # Telemetry normalization check: monoculture -> -1.0, uniform -> +1.0
+    ct_mono = ClientTelemetry(client_id="mono", label_entropy=h_mono, num_classes=5)
+    vec_mono = ct_mono.get_state_vector(normalize=True)
+    assert pytest.approx(vec_mono[4], abs=1e-5) == -1.0
+
+    ct_uniform = ClientTelemetry(client_id="uniform", label_entropy=h_uniform, num_classes=5)
+    vec_uniform = ct_uniform.get_state_vector(normalize=True)
+    assert pytest.approx(vec_uniform[4], abs=1e-5) == 1.0
+
+
+def test_strict_accuracy_constrained_reward():
+    """Verify exponential penalty on accuracy drop > 0.5% and scaled positive reward."""
+    from rl_controller.env import compute_accuracy_constrained_reward
+
+    # Case 1: Accuracy drop > 0.5% (e.g., -1.5% drop: acc_diff = -0.015)
+    r_drop, rc_drop = compute_accuracy_constrained_reward(
+        acc_curr=0.835,
+        acc_prev=0.850,
+        sum_params=42792.0,
+        baseline_budget=42792.0,
+        mean_latency=0.5,
+        tolerance_threshold=0.005,
+        scale_acc=100.0,
+        acc_penalty_mode="exponential",
+    )
+    assert rc_drop["accuracy_collapsed"] is True
+    # Exponential penalty: -10.0 * exp(0.015) ~ -10.151
+    assert rc_drop["acc_term"] < -10.0
+    assert pytest.approx(rc_drop["acc_term"], abs=1e-3) == -10.0 * np.exp(0.015)
+
+    # Case 2: Positive accuracy gain (+2.0%: acc_diff = +0.02)
+    r_gain, rc_gain = compute_accuracy_constrained_reward(
+        acc_curr=0.870,
+        acc_prev=0.850,
+        sum_params=42792.0,
+        baseline_budget=42792.0,
+        mean_latency=0.5,
+        tolerance_threshold=0.005,
+        scale_acc=100.0,
+    )
+    assert rc_gain["accuracy_collapsed"] is False
+    assert pytest.approx(rc_gain["acc_term"], abs=1e-5) == 0.02 * 100.0  # +2.0
+
+    # Case 3: Minor drop within 0.5% tolerance (acc_diff = -0.002)
+    r_tol, rc_tol = compute_accuracy_constrained_reward(
+        acc_curr=0.848,
+        acc_prev=0.850,
+        sum_params=42792.0,
+        baseline_budget=42792.0,
+        mean_latency=0.5,
+        tolerance_threshold=0.005,
+        scale_acc=100.0,
+    )
+    assert rc_tol["accuracy_collapsed"] is False
+    assert pytest.approx(rc_tol["acc_term"], abs=1e-5) == -0.002 * 100.0  # -0.2 (no exp penalty)
+
+
+def test_compression_booster_gating():
+    """Verify compression ratio booster is secondary and gated when accuracy collapses."""
+    from rl_controller.env import compute_accuracy_constrained_reward
+
+    # 30% compression (params = 30,000 vs budget 42,792): CR ~ 0.2989
+    # When accuracy is preserved (acc_gain = +0.01): compression booster is active
+    _, rc_active = compute_accuracy_constrained_reward(
+        acc_curr=0.860,
+        acc_prev=0.850,
+        sum_params=30000.0,
+        baseline_budget=42792.0,
+        mean_latency=0.5,
+        compression_booster_weight=0.20,
+    )
+    assert rc_active["compression_ratio"] > 0.0
+    assert rc_active["compression_booster"] > 0.0
+    assert pytest.approx(rc_active["compression_booster"], abs=1e-4) == 0.20 * rc_active["compression_ratio"]
+
+    # When accuracy collapses (acc_drop = -0.02 > 0.005 tolerance):
+    # Compression booster MUST BE GATED (0.0) so shrinking is never reinforced!
+    _, rc_gated = compute_accuracy_constrained_reward(
+        acc_curr=0.830,
+        acc_prev=0.850,
+        sum_params=30000.0,
+        baseline_budget=42792.0,
+        mean_latency=0.5,
+        compression_booster_weight=0.20,
+    )
+    assert rc_gated["accuracy_collapsed"] is True
+    assert rc_gated["compression_booster"] == 0.0
+    # Exponential penalty completely dominates
+    assert rc_gated["raw_reward"] < -10.0
+    assert rc_gated["total_reward"] <= -5.0
+
+
+def test_rl_controller_env_import_and_lifecycle():
+    """Verify rl_controller/env.py module imports and runs with [-1, 1] observation space."""
+    import rl_controller.env as rl_env
+
+    rng = np.random.RandomState(42)
+    client_data = {
+        cid: (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+        for cid in range(4)
+    }
+    test_data = (rng.randn(32, 32).astype(np.float32), rng.randint(0, 5, size=32).astype(np.int64))
+
+    env = rl_env.FederatedKANEnv(
+        client_datasets=client_data,
+        test_data=test_data,
+        num_clients=4,
+        max_rounds=2,
+        seed=42,
+    )
+
+    assert env.observation_space.shape == (4, 5)
+    assert env.observation_space.low.min() == -1.0
+    assert env.observation_space.high.max() == 1.0
+
+    obs, info = env.reset(seed=42)
+    assert obs.shape == (4, 5)
+    assert np.all(obs >= -1.0) and np.all(obs <= 1.0)
+
+    actions = [0, 4, 8, 11]
+    next_obs, reward, terminated, truncated, step_info = env.step(actions)
+    assert next_obs.shape == (4, 5)
+    assert np.all(next_obs >= -1.0) and np.all(next_obs <= 1.0)
+    assert isinstance(reward, float)
+    assert "reward_components" in step_info
+
 
 

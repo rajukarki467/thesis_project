@@ -166,9 +166,14 @@ thesis_project/
 │       ├── metrics.py              # AAMI metrics, savings formulas & Table 4.1 export
 │       ├── reproducibility.py      # Deterministic seed controls (Python, NumPy, Torch)
 │       └── splits.py
+├── rl_controller/
+│   ├── __init__.py                 # RL controller environment package exports
+│   └── env.py                      # RL controller environment, state extraction & reward formulation
 ├── tests/
 │   ├── test_controllers.py        # Unit tests for Heuristic & PPO controllers
-│   └── test_environment.py        # Comprehensive test suite for telemetry & Gym environment
+│   ├── test_environment.py        # Comprehensive test suite for telemetry & Gym environment
+│   ├── test_aggregation.py        # Spline weight projection and aggregation tests
+│   └── test_visualization.py      # Publication visualization verification suite
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -282,18 +287,23 @@ Full federated baseline loops across all 9 combinations (3 algorithms $\times$ 3
 
 ## Reinforcement Learning Gymnasium Environment
 
-Implemented in [`src/environment/f1_env.py`](src/environment/f1_env.py) and [`src/environment/telemetry.py`](src/environment/telemetry.py), `FederatedKANEnv` subclasses `gymnasium.Env` to formulate resource-adaptive federated learning as an MDP following Sections 3.2.4 & 3.2.5 of the proposal.
+Implemented in [`rl_controller/env.py`](rl_controller/env.py) and [`src/environment/f1_env.py`](src/environment/f1_env.py) (supported by [`src/environment/telemetry.py`](src/environment/telemetry.py)), `FederatedKANEnv` subclasses `gymnasium.Env` to formulate resource-adaptive federated learning as a strict accuracy-constrained Markov Decision Process (MDP) following Sections 3.2.4 & 3.2.5 of the proposal.
 
 ### 1. State Space & 5D Telemetry Vector
-For each client $i$ at round $t$:
-$$\mathbf{S}_i^t = \left[ L_{\text{local}}^i, \; \text{Var}(x^i), \; \Delta\tau^i, \; \text{bw}^i, \; \kappa^i \right] \in [0.0, 1.0]^5$$
-- $L_{\text{local}}^i$: Most recent training cross-entropy loss.
-- $\text{Var}(x^i)$: Empirical input feature variance across local ECG beats.
-- $\Delta\tau^i$: Wall-clock latency of the local training step in seconds.
-- $\text{bw}^i$: Simulated edge link bandwidth ($1.0 - 10.0\text{ Mbps}$).
-- $\kappa^i$: Second-difference loss trajectory curvature: $|L_t^i - 2L_{t-1}^i + L_{t-2}^i|$.
+For each client $i$ at communication round $t$, the 5-dimensional telemetry state vector captures operational hardware, computational dynamics, and local non-IID label skew:
+$$\mathbf{S}_i^t = \left[ L_{\text{local}}^i, \; \text{Var}(x^i), \; \Delta\tau^i, \; \text{bw}^i, \; H(y^i) \right] \in [-1.0, 1.0]^5$$
 
-**Observation Space**: `Box(low=0.0, high=1.0, shape=(N, 5), dtype=np.float32)`
+- $L_{\text{local}}^i$: Most recent local training cross-entropy loss normalized to $[-1.0, 1.0]$.
+- $\text{Var}(x^i)$: Empirical input feature variance across local ECG beats normalized to $[-1.0, 1.0]$.
+- $\Delta\tau^i$: Wall-clock latency of the local training step in seconds normalized to $[-1.0, 1.0]$.
+- $\text{bw}^i$: Simulated channel bandwidth ($1.0 - 20.0\text{ Mbps}$) normalized to $[-1.0, 1.0]$.
+- $H(y^i)$: Shannon entropy of local client training labels, measuring Dirichlet non-IID data skew:
+  $$H(y^i) = -\sum_{c: p_c > 0} p_c \ln(p_c), \quad H_{\max} = \ln(C) \approx 1.6094 \text{ (for $C=5$ AAMI classes)}$$
+  Normalized linearly into $[-1.0, 1.0]$:
+  - $H(y^i) = 0.0$ (monoculture / extreme non-IID skew) $\to$ **$-1.0$**
+  - $H(y^i) = \ln(5)$ (perfect uniform balance / IID) $\to$ **$+1.0$**
+
+**Observation Space**: `Box(low=-1.0, high=1.0, shape=(N, 5), dtype=np.float32)`
 
 ### 2. Action Space & Parameter Complexity
 $$\mathcal{A}_{\text{global}} = \text{MultiDiscrete}([12] \times N)$$
@@ -324,37 +334,82 @@ $$M_{\text{proj}} = B_d^\dagger B_s \in \mathbb{R}^{(G_d + k_d) \times (G_s + k_
 - **Zero Dilution**: Replaces naive zero-padding, preventing high-frequency spline coefficient dilution.
 - **Exact Idempotency**: When $(G_s, k_s) = (G_d, k_d)$, $M_{\text{proj}} = I$, matching standard FedAvg with $0.0$ precision loss.
 
-### 4. Multi-Objective Calibrated Reward Formulation (Equation 7)
-Refactored into normalized, dimensionless terms strictly bounded in $[-5.0, 5.0]$:
+### 4. Strict Accuracy-Constrained Reward Formulation
+To prevent **policy collapse** (premature convergence to minimal parameter configurations $G=3, k=2$ at the expense of global accuracy), the reward function enforces accuracy as the primary optimization constraint:
 
-$$R_t = 100.0 \cdot \text{clip}(\text{Acc}_t - \text{Acc}_{t-1}, -\delta_{\text{clip}}, \delta_{\text{clip}}) - \beta_1 \left(\frac{\text{Params}_t - B_{\text{ref}}}{B_{\text{ref}}}\right) - \beta_2 \left(\frac{\bar{\tau}_t}{\bar{\tau}_{\text{base}}}\right) - \beta_3 \|a_t - a_{t-1}\|_1$$
+$$R_t = R_{\text{acc}} + R_{\text{boost}} - P_{\text{param}} - P_{\text{latency}} - P_{\text{smooth}}$$
 
-- **Accuracy Improvement**: Scaled by $100.0$ and clipped to $\delta_{\text{clip}} = 0.04$ ($[-4.0, +4.0]$), balancing gradient magnitudes against edge parameter penalties.
-- **Immediate Budget Penalty**: $B_{\text{ref}} = 42,792$ (from fixed FedAvg-KAN $G=5, k=3$ for $N=8$). Allocating fleets above 42,792 parameters incurs an immediate penalty ($1.5 \times \beta_1$ multiplier), while compressed fleets receive positive reward margins.
-- **Latency Regularization**: $\beta_2 = 0.1$, normalized by client baseline latency $\bar{\tau}_{\text{base}} = 0.5\text{ s}$.
-- **Action Smoothness Regularization**: $-\beta_3 \|a_t - a_{t-1}\|_1$ ($\beta_3 = 0.02$) penalizes abrupt round-to-round $(G, k)$ switching, stabilizing PPO actor-critic dynamics.
+1. **Strict Accuracy Constraint & Exponential Penalty**:
+   Let $\Delta\text{Acc} = \text{Acc}_t - \text{Acc}_{t-1}$ and $\tau = 0.005$ ($0.5\%$ tolerance threshold):
+   $$R_{\text{acc}} = \begin{cases}
+   -10.0 \cdot \exp(|\Delta\text{Acc}|), & \text{if } \Delta\text{Acc} < -\tau \quad (\text{severe drop: exponential penalty}) \\
+   100.0 \cdot \Delta\text{Acc}, & \text{otherwise} \quad (\text{primary performance gradient})
+   \end{cases}$$
+   *(Supports linear penalty $-10.0 \cdot |\Delta\text{Acc}|$ via `acc_penalty_mode: "linear"`)*.
+2. **Secondary Gated Compression Booster**:
+   Compression ratio $CR = \max\left(0.0, \frac{B_{\text{ref}} - \sum \text{Params}}{B_{\text{ref}}}\right)$.
+   $$R_{\text{boost}} = \begin{cases}
+   0.0, & \text{if } \Delta\text{Acc} < -\tau \quad (\text{gated: compression NEVER rewarded on accuracy drop}) \\
+   w_{\text{boost}} \cdot CR, & \text{if } \sum \text{Params} \le B_{\text{ref}} \text{ and } \Delta\text{Acc} \ge -\tau \quad (w_{\text{boost}} = 0.20)
+   \end{cases}$$
+3. **Over-Budget & Regularization Penalties**:
+   - **Over-Budget Penalty**: $P_{\text{param}} = \beta_1 \left(rel\_cost + 2 \cdot rel\_cost^2\right)$ when $\sum \text{Params} > B_{\text{ref}}$ ($B_{\text{ref}} = 42,792$).
+   - **Latency Penalty**: $P_{\text{latency}} = \beta_2 \left(\frac{\bar{\tau}_t}{\bar{\tau}_{\text{base}}}\right)$ ($\beta_2 = 0.1$, $\bar{\tau}_{\text{base}} = 0.5\text{ s}$).
+   - **Action Smoothness**: $P_{\text{smooth}} = \beta_3 \|a_t - a_{t-1}\|_1$ ($\beta_3 = 0.02$).
 
 ### 5. Sanity Check Rollout Trace
 Verified via `.venv/bin/python src/environment/f1_env.py --config configs/ppo.yaml --steps 2 --seed 42`:
 ```text
-[RESET] Initial Test Accuracy: 0.0738 | Initial Test Macro F1: 0.0521
+==============================================================================
+FEDERATED KAN GYMNASIUM ENVIRONMENT SANITY CHECK
+==============================================================================
+Config path : configs/ppo.yaml
+Rollout seed: 42
+Num steps   : 2
+
+Environment Metadata:
+  Observation Space : Box(-1.0, 1.0, (8, 5), float32)
+  Action Space      : MultiDiscrete([12 12 12 12 12 12 12 12])
+  Number of Clients : 8
+  Max Rounds        : 10
+  Lambda 1 (Params) : 2.0
+  Lambda 2 (Latency): 0.1
+
+[RESET] Initial Environment State:
+  Initial State Shape  : (8, 5) (dtype: float32)
+  Observation Range    : [-0.9606, 0.8591]
+  Initial Test Accuracy: 0.0738
+  Initial Test Macro F1: 0.0521
+
 --- STEP 1/2 ---
-  Sampled Actions (Indices): [3, 9, 4, 1, 4, 8, 4, 8]
-  Mapped (G, k) Configs    : [(5, 2), (10, 2), (5, 3), (3, 3), (5, 3), (7, 4), (5, 3), (7, 4)]
-  Reward (Equation 7)      : +0.1055
-    * ΔAcc_global        : +0.1500 (clipped from +0.6758)
-    * -λ1 * Cost(Params) : -0.0194 (Σ Params: 46,936, Savings: -9.7%)
-    * -λ2 * Σ Latency    : -0.0251 (Σ Latency: 5.027s)
-  Global Test Accuracy     : 0.7496 (Δ: +0.6758) | Global Test Macro F1: 0.3055
+  Sampled Actions (Indices): [4, 7, 0, 7, 5, 7, 4, 2]
+  Mapped (G, k) Configs    : [(5, 3), (7, 3), (3, 2), (7, 3), (5, 4), (7, 3), (5, 3), (3, 4)]
+  Step Wall-Clock Duration : 6.713 s
+  New Observation Shape    : (8, 5)
+  Reward (Equation 7)      : +5.000000
+    * ΔAcc_global        : +20.764701
+    * -λ1 * Cost(Params) : -0.089896 (Σ Params: 44568, Savings: -4.2%)
+    * -λ2 * Σ Latency    : -0.339005 (Σ Latency: 13.560s)
+  Global Test Accuracy     : 0.7831 (Δ: +0.2107)
+  Global Test Macro F1     : 0.3522
+  Terminated: False | Truncated: False
+
 --- STEP 2/2 ---
-  Sampled Actions (Indices): [2, 9, 1, 9, 11, 9, 3, 2]
-  Mapped (G, k) Configs    : [(3, 4), (10, 2), (3, 3), (10, 2), (10, 4), (10, 2), (5, 2), (3, 4)]
-  Reward (Equation 7)      : +0.0091
-    * ΔAcc_global        : +0.0630
-    * -λ1 * Cost(Params) : -0.0360 (Σ Params: 50,488, Savings: -18.0%)
-    * -λ2 * Σ Latency    : -0.0179 (Σ Latency: 3.577s)
-  Global Test Accuracy     : 0.8126 (Δ: +0.0630) | Global Test Macro F1: 0.3962
-SANITY CHECK COMPLETE: 2-step rollout succeeded! Total Reward: +0.1146
+  Sampled Actions (Indices): [11, 1, 10, 8, 3, 2, 6, 8]
+  Mapped (G, k) Configs    : [(10, 4), (3, 3), (10, 3), (7, 4), (5, 2), (3, 4), (7, 2), (7, 4)]
+  Step Wall-Clock Duration : 6.173 s
+  New Observation Shape    : (8, 5)
+  Reward (Equation 7)      : +5.000000
+    * ΔAcc_global        : +8.537360
+    * -λ1 * Cost(Params) : -0.537412 (Σ Params: 51080, Savings: -19.4%)
+    * -λ2 * Σ Latency    : -0.411682 (Σ Latency: 16.467s)
+  Global Test Accuracy     : 0.8270 (Δ: +0.0926)
+  Global Test Macro F1     : 0.4206
+  Terminated: False | Truncated: False
+
+==============================================================================
+SANITY CHECK COMPLETE: 2-step rollout succeeded! Total Reward: +10.000000
+==============================================================================
 ```
 
 ---
@@ -450,6 +505,23 @@ A dedicated verification suite was integrated to assert system-wide correctness:
 | **PPO 3-Round Dry-Run** | Mean Parameters per Round | **$42,792 \le 42,792$** | **VERIFIED** |
 | **PPO 3-Round Dry-Run** | Final Accuracy vs. Baseline | **$86.39\%$ vs. $86.83\%$ ($\Delta = -0.44\% \le 0.5\%$)** | **VERIFIED** |
 | **PPO Decision Overhead** | Decision Latency per Round | **$1.21\text{ ms}$** | **VERIFIED** |
+
+#### 5. Policy Collapse Mitigation: Strict Accuracy-Constrained MDP & Local Label Entropy
+- **Problem**: When optimizing trade-offs between parameter compression and global accuracy, unconstrained compression incentives create a degenerate failure mode (**policy collapse**): PPO discovers that aggressively shrinking edge models to the coarsest possible configuration ($G=3, k=2$) yields steady positive compression bonuses each round, which overpower slight negative accuracy deltas. The policy rapidly collapses into minimal-parameter mode, sacrificing clinical accuracy.
+- **Solution (Implemented in [`rl_controller/env.py`](rl_controller/env.py), [`src/environment/f1_env.py`](src/environment/f1_env.py), and [`src/environment/telemetry.py`](src/environment/telemetry.py))**:
+  1. **Strict Accuracy Constraint with Exponential Penalty**:
+     When round-to-round accuracy difference drops below a 0.5% tolerance threshold ($\Delta\text{Acc} < -0.005$):
+     $$R_{\text{acc}} = -10.0 \cdot \exp(|\Delta\text{Acc}|)$$
+     Any drop beyond 0.5% incurs an immediate, steep penalty ($\le -10.0$), wiping out potential parameter savings and forcing the agent back toward high-capacity configurations.
+  2. **Primary Positive Gradient**:
+     When accuracy improves ($\Delta\text{Acc} > 0$), positive reward is scaled high ($100.0 \cdot \Delta\text{Acc}$), maintaining predictive accuracy as the principal optimization target.
+  3. **Gated Secondary Compression Booster**:
+     Parameter compression ratio $CR = (B_{\text{ref}} - \sum \text{Params}) / B_{\text{ref}}$ is treated strictly as an auxiliary booster ($+0.20 \cdot CR$). Crucially, the booster is **gated to $0.0$** whenever $\Delta\text{Acc} < -0.005$, ensuring parameter reduction is never rewarded if global accuracy drops.
+  4. **5D Client Telemetry with Local Label Entropy**:
+     The state vector replaces loss curvature with local label Shannon entropy $H(y^i)$ to directly expose non-IID class skew to the controller:
+     $$\mathbf{S}_i^t = [L_{\text{local}}^i, \; \text{Var}(x^i), \; \Delta\tau^i, \; \text{bw}^i, \; H(y^i)] \in [-1.0, 1.0]^5$$
+     Normalized linearly: $H=0$ (extreme non-IID monoculture) $\to -1.0$, $H=\ln(5)$ (uniform balanced IID) $\to +1.0$.
+  5. **Verification**: Validated with 35 passing unit tests ([`tests/test_environment.py`](tests/test_environment.py), [`tests/test_controllers.py`](tests/test_controllers.py), [`tests/test_aggregation.py`](tests/test_aggregation.py), [`tests/test_visualization.py`](tests/test_visualization.py)), confirming gated boosters, exponential penalty triggers, and $[-1.0, 1.0]$ state bounds.
 
 ---
 

@@ -3,18 +3,16 @@ Client-Side and Server-Side Telemetry Aggregation Tracker for Federated KAN.
 
 Mathematical Formulation (Section 3.2.4 & 3.2.5):
 For each client i at communication round t, the 5-dimensional state vector is:
-    S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, κ^i]
+    S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)]
 where:
     - L_local^i: Most recent local training cross-entropy loss.
     - Var(x^i): Variance of input features computed over client local batch data.
     - Δτ^i: Wall-clock latency of the local training step in seconds.
     - bw^i: Simulated available bandwidth in Mbps (drawn from uniform or lognormal).
-    - κ^i: Curvature proxy derived from the second-difference statistics of the loss trajectory:
-           κ_t^i = |L_t^i - 2 * L_{t-1}^i + L_{t-2}^i|  (for t >= 2)
-           κ_1^i = |L_1^i - L_0^i|                     (for t = 1)
-           κ_0^i = 0.0                                 (for t = 0)
+    - H(y^i): Shannon entropy of local client training labels (quantifying non-IID data skew):
+           H(y^i) = - sum_{c: p_c > 0} p_c * ln(p_c)
 
-All features are normalized into standard numerical ranges [0.0, 1.0] for stable RL policy inputs.
+All features are normalized into standard numerical ranges [-1.0, 1.0] for stable RL policy inputs.
 """
 
 from __future__ import annotations
@@ -197,12 +195,43 @@ class BandwidthSimulator:
         return np.clip(raw, self.min_mbps, self.max_mbps).astype(np.float32)
 
 
+def compute_label_entropy(
+    labels: Union[Sequence[int], np.ndarray],
+    num_classes: Optional[int] = 5,
+) -> float:
+    """
+    Compute Shannon entropy of client class labels to quantify non-IID data skew:
+        H(Y^i) = - sum_{c: p_c > 0} p_c * ln(p_c)
+
+    Parameters
+    ----------
+    labels : Sequence[int] or np.ndarray
+        Array or sequence of integer class labels.
+    num_classes : Optional[int]
+        Expected total number of classes (default 5 for AAMI ECG classes).
+        Maximum entropy is ln(num_classes).
+
+    Returns
+    -------
+    float
+        Shannon entropy in nats (>= 0.0). Monoculture / extreme non-IID skew yields 0.0.
+    """
+    arr = np.asarray(labels).flatten()
+    if len(arr) == 0:
+        return 0.0
+    _, counts = np.unique(arr, return_counts=True)
+    probs = counts.astype(np.float64) / float(len(arr))
+    probs = probs[probs > 0]
+    return float(-np.sum(probs * np.log(probs)))
+
+
 class ClientTelemetry:
     """
     Client-level telemetry tracker.
 
     Tracks loss trajectory, empirical input variance, step latency,
-    channel bandwidth, loss curvature, and hardware constraints for a single client.
+    channel bandwidth, local label entropy (measuring non-IID skew),
+    and hardware constraints for a single client.
 
     Parameters
     ----------
@@ -210,21 +239,29 @@ class ClientTelemetry:
         Unique identifier of the client.
     input_variance : float
         Empirical variance of input features Var(x^i).
+    label_entropy : float
+        Shannon entropy of client's local label distribution H(y^i).
     normalization_bounds : Optional[Dict[str, float]]
-        Scaling parameters for normalizing features into [0, 1].
+        Scaling parameters for normalizing features into [-1, 1].
     hardware_profile : Optional[ClientHardwareProfile]
         Physical device constraints (bandwidth range, compute latency multiplier).
+    num_classes : int
+        Number of output classes (default 5).
     """
 
     def __init__(
         self,
         client_id: Union[int, str],
         input_variance: float = 1.0,
+        label_entropy: float = 0.0,
         normalization_bounds: Optional[Dict[str, float]] = None,
         hardware_profile: Optional[ClientHardwareProfile] = None,
+        num_classes: int = 5,
     ):
         self.client_id = str(client_id)
         self.input_variance = float(input_variance)
+        self.label_entropy = float(label_entropy)
+        self.num_classes = int(num_classes)
         self.hardware_profile = (
             copy.deepcopy(hardware_profile)
             if hardware_profile is not None
@@ -245,14 +282,20 @@ class ClientTelemetry:
         self.is_straggler: bool = False
         self.status: str = "active"
 
-        # Default normalization bounds: [0, 1] range mapping
+        # Default normalization bounds for affine mapping into [-1.0, 1.0]
+        max_ent = float(np.log(max(2, self.num_classes)))
         self.bounds = {
+            "loss_min": 0.0,
             "loss_max": 5.0,
+            "variance_min": 0.0,
             "variance_max": 2.0,
+            "latency_min": 0.0,
             "latency_max": 10.0,
             "bandwidth_min": 1.0,
             "bandwidth_max": 20.0,
             "curvature_max": 2.0,
+            "entropy_min": 0.0,
+            "entropy_max": max_ent,
         }
         if normalization_bounds is not None:
             self.bounds.update(normalization_bounds)
@@ -263,6 +306,7 @@ class ClientTelemetry:
         latency: float,
         bandwidth: Optional[float] = None,
         input_variance: Optional[float] = None,
+        label_entropy: Optional[float] = None,
         is_straggler: bool = False,
         status: str = "active",
     ) -> None:
@@ -279,6 +323,8 @@ class ClientTelemetry:
             Available link bandwidth in Mbps.
         input_variance : Optional[float]
             Updated input variance (if changed).
+        label_entropy : Optional[float]
+            Updated label entropy (if changed).
         is_straggler : bool
             Whether client exceeded round timeout deadline.
         status : str
@@ -290,6 +336,8 @@ class ClientTelemetry:
             self.input_variance = float(np.nan_to_num(input_variance, nan=1.0, posinf=2.0, neginf=0.0))
         if bandwidth is not None:
             self.latest_bandwidth = float(np.nan_to_num(bandwidth, nan=5.0, posinf=20.0, neginf=1.0))
+        if label_entropy is not None:
+            self.label_entropy = float(np.nan_to_num(label_entropy, nan=0.0, posinf=5.0, neginf=0.0))
 
         self.is_straggler = bool(is_straggler)
         self.status = str(status)
@@ -298,7 +346,7 @@ class ClientTelemetry:
         self.latency_history.append(self.latest_latency)
         self.bandwidth_history.append(self.latest_bandwidth)
 
-        # Compute curvature proxy κ^i from loss trajectory
+        # Compute curvature proxy κ^i from loss trajectory for backward diagnostics
         self.latest_curvature = self.compute_curvature()
 
     def compute_curvature(self) -> float:
@@ -326,17 +374,17 @@ class ClientTelemetry:
     def get_state_vector(self, normalize: bool = True) -> np.ndarray:
         """
         Extract the 5-dimensional state vector S_i^t:
-            S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, κ^i]
+            S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)]
 
         Parameters
         ----------
         normalize : bool
-            If True, scales features into [0.0, 1.0]; otherwise returns raw physical values.
+            If True, scales features into [-1.0, 1.0]; otherwise returns raw physical values.
 
         Returns
         -------
         np.ndarray
-            1D array of shape (5,), dtype np.float32.
+            1D array of shape (5,), dtype np.float32 bounded in [-1.0, 1.0] when normalized.
         """
         raw = np.array(
             [
@@ -344,7 +392,7 @@ class ClientTelemetry:
                 float(np.nan_to_num(self.input_variance, nan=1.0, posinf=2.0, neginf=0.0)),
                 float(np.nan_to_num(self.latest_latency, nan=0.5, posinf=10.0, neginf=0.0)),
                 float(np.nan_to_num(self.latest_bandwidth, nan=5.0, posinf=20.0, neginf=1.0)),
-                float(np.nan_to_num(self.latest_curvature, nan=0.0, posinf=2.0, neginf=0.0)),
+                float(np.nan_to_num(self.label_entropy, nan=0.0, posinf=5.0, neginf=0.0)),
             ],
             dtype=np.float32,
         )
@@ -353,29 +401,36 @@ class ClientTelemetry:
             return raw
 
         b = self.bounds
-        # Safe min-max normalization to [0.0, 1.0] with clipping
+        # Safe min-max normalization to [0.0, 1.0], followed by affine mapping to [-1.0, 1.0]:
+        # s = 2.0 * ((x - min) / (max - min)) - 1.0
         loss_min = float(b.get("loss_min", 0.0))
         loss_max = float(b.get("loss_max", 5.0))
-        norm_loss = np.clip((raw[0] - loss_min) / max(1e-6, loss_max - loss_min), 0.0, 1.0)
+        u_loss = np.clip((raw[0] - loss_min) / max(1e-6, loss_max - loss_min), 0.0, 1.0)
+        norm_loss = 2.0 * u_loss - 1.0
 
         var_min = float(b.get("variance_min", 0.0))
         var_max = float(b.get("variance_max", 2.0))
-        norm_var = np.clip((raw[1] - var_min) / max(1e-6, var_max - var_min), 0.0, 1.0)
+        u_var = np.clip((raw[1] - var_min) / max(1e-6, var_max - var_min), 0.0, 1.0)
+        norm_var = 2.0 * u_var - 1.0
 
         lat_min = float(b.get("latency_min", 0.0))
         lat_max = float(b.get("latency_max", 10.0))
-        norm_lat = np.clip((raw[2] - lat_min) / max(1e-6, lat_max - lat_min), 0.0, 1.0)
+        u_lat = np.clip((raw[2] - lat_min) / max(1e-6, lat_max - lat_min), 0.0, 1.0)
+        norm_lat = 2.0 * u_lat - 1.0
 
         bw_min = float(b.get("bandwidth_min", 1.0))
         bw_max = float(b.get("bandwidth_max", 20.0))
-        norm_bw = np.clip((raw[3] - bw_min) / max(1e-6, bw_max - bw_min), 0.0, 1.0)
+        u_bw = np.clip((raw[3] - bw_min) / max(1e-6, bw_max - bw_min), 0.0, 1.0)
+        norm_bw = 2.0 * u_bw - 1.0
 
-        curv_min = float(b.get("curvature_min", 0.0))
-        curv_max = float(b.get("curvature_max", 2.0))
-        norm_curv = np.clip((raw[4] - curv_min) / max(1e-6, curv_max - curv_min), 0.0, 1.0)
+        ent_min = float(b.get("entropy_min", 0.0))
+        ent_max = float(b.get("entropy_max", np.log(max(2, self.num_classes))))
+        u_ent = np.clip((raw[4] - ent_min) / max(1e-6, ent_max - ent_min), 0.0, 1.0)
+        norm_ent = 2.0 * u_ent - 1.0
 
-        out = np.array([norm_loss, norm_var, norm_lat, norm_bw, norm_curv], dtype=np.float32)
-        return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
+        out = np.array([norm_loss, norm_var, norm_lat, norm_bw, norm_ent], dtype=np.float32)
+        out = np.clip(out, -1.0, 1.0)
+        return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
 
     def reset(self, initial_loss: float = 1.0, initial_bandwidth: float = 5.0) -> None:
         """Reset history and telemetry state."""
@@ -406,13 +461,17 @@ class TelemetryTracker:
         Identifiers for participating clients.
     client_variances : Optional[Dict[int | str, float]]
         Pre-computed empirical input feature variances for each client.
+    client_entropies : Optional[Dict[int | str, float]]
+        Pre-computed empirical label Shannon entropies for each client (non-IID skew).
     normalization_bounds : Optional[Dict[str, float]]
-        Configuration bounds for telemetry normalization into [0.0, 1.0].
+        Configuration bounds for telemetry normalization into [-1.0, 1.0].
     bandwidth_cfg : Optional[Dict[str, Any]]
         Configuration parameters for synthetic bandwidth simulation.
     hardware_profiles : Optional[Dict[Union[int, str], ClientHardwareProfile]]
         Explicit mapping of client_id to ClientHardwareProfile. If None,
         50% edge tier and 50% compute tier profiles are assigned automatically.
+    num_classes : int
+        Number of output classes for label entropy normalization (default 5).
     seed : Optional[int]
         RNG seed for deterministic bandwidth and noise generation.
     """
@@ -422,20 +481,23 @@ class TelemetryTracker:
         "input_variance",
         "latency",
         "bandwidth",
-        "curvature",
+        "label_entropy",
     ]
 
     def __init__(
         self,
         client_ids: Sequence[Union[int, str]],
         client_variances: Optional[Dict[Union[int, str], float]] = None,
+        client_entropies: Optional[Dict[Union[int, str], float]] = None,
         normalization_bounds: Optional[Dict[str, float]] = None,
         bandwidth_cfg: Optional[Dict[str, Any]] = None,
         hardware_profiles: Optional[Dict[Union[int, str], ClientHardwareProfile]] = None,
+        num_classes: int = 5,
         seed: Optional[int] = None,
     ):
         self.client_ids = [str(cid) for cid in client_ids]
         self.num_clients = len(self.client_ids)
+        self.num_classes = int(num_classes)
         self.normalization_bounds = normalization_bounds or {}
 
         # Bandwidth simulator
@@ -471,11 +533,16 @@ class TelemetryTracker:
             var_val = 1.0
             if client_variances is not None and (cid in client_variances or int(cid) in client_variances):
                 var_val = float(client_variances.get(cid, client_variances.get(int(cid), 1.0)))
+            ent_val = 0.0
+            if client_entropies is not None and (cid in client_entropies or int(cid) in client_entropies):
+                ent_val = float(client_entropies.get(cid, client_entropies.get(int(cid), 0.0)))
             self.clients[cid] = ClientTelemetry(
                 client_id=cid,
                 input_variance=var_val,
+                label_entropy=ent_val,
                 normalization_bounds=self.normalization_bounds,
                 hardware_profile=self.hardware_profiles[cid],
+                num_classes=self.num_classes,
             )
             self.clients[cid].latest_bandwidth = float(initial_bw[idx])
 
@@ -516,7 +583,7 @@ class TelemetryTracker:
         Returns
         -------
         np.ndarray
-            Initial normalized state matrix S_0 in R^{N x 5}.
+            Initial normalized state matrix S_0 in R^{N x 5} with entries in [-1.0, 1.0].
         """
         if seed is not None:
             self.set_seed(seed)
@@ -557,7 +624,7 @@ class TelemetryTracker:
         Returns
         -------
         np.ndarray
-            Updated normalized telemetry state matrix S^t in R^{N x 5}.
+            Updated normalized telemetry state matrix S^t in R^{N x 5} with entries in [-1.0, 1.0].
         """
         profiles_list = [self.clients[cid].hardware_profile for cid in self.client_ids]
         bw_samples = (
@@ -573,6 +640,7 @@ class TelemetryTracker:
             loss = float(c_metrics.get("local_loss", self.clients[cid].latest_loss))
             lat = float(c_metrics.get("execution_latency", self.clients[cid].latest_latency))
             var = c_metrics.get("input_variance", None)
+            ent = c_metrics.get("label_entropy", None)
             bw = float(bw_samples[idx]) if bw_samples is not None else None
             is_straggler = bool(c_metrics.get("is_straggler", False))
             status = str(c_metrics.get("status", "active"))
@@ -582,6 +650,7 @@ class TelemetryTracker:
                 latency=lat,
                 bandwidth=bw,
                 input_variance=var,
+                label_entropy=ent,
                 is_straggler=is_straggler,
                 status=status,
             )
@@ -596,12 +665,15 @@ class TelemetryTracker:
         -------
         np.ndarray
             Matrix of shape (num_clients, 5) with dtype np.float32.
-            If normalize=True, all entries are strictly within [0.0, 1.0].
+            If normalize=True, all entries are strictly within [-1.0, 1.0].
         """
         matrix = np.zeros((self.num_clients, 5), dtype=np.float32)
         for idx, cid in enumerate(self.client_ids):
             matrix[idx] = self.clients[cid].get_state_vector(normalize=normalize)
-        return np.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=0.0)
+        if normalize:
+            matrix = np.clip(matrix, -1.0, 1.0)
+            return np.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=-1.0)
+        return matrix
 
     def get_client_state(self, client_id: Union[int, str], normalize: bool = True) -> np.ndarray:
         """Get 5-dimensional state vector for a single client."""
@@ -628,6 +700,6 @@ class TelemetryTracker:
             "mean_variance": float(np.mean(raw_matrix[:, 1])),
             "mean_latency": float(np.mean(raw_matrix[:, 2])),
             "mean_bandwidth": float(np.mean(raw_matrix[:, 3])),
-            "mean_curvature": float(np.mean(raw_matrix[:, 4])),
+            "mean_entropy": float(np.mean(raw_matrix[:, 4])),
             "total_latency": float(np.sum(raw_matrix[:, 2])),
         }

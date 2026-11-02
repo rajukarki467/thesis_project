@@ -3,7 +3,7 @@
 # Reference: Section 3.2.4 & Section 3.2.5 of the Thesis Proposal
 # ==============================================================================
 
-# Telemetry State Configuration: S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, κ^i]
+# Telemetry State Configuration: S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)]
 telemetry:
   num_features: 5
   feature_names:
@@ -11,14 +11,18 @@ telemetry:
     - "input_variance"    # Var(x): Empirical input feature variance across ECG samples
     - "latency"           # Δτ: Wall-clock duration of local training step (seconds)
     - "bandwidth"         # bw: Simulated network link throughput (Mbps)
-    - "curvature"         # κ: Second-difference loss trajectory curvature |L_t - 2*L_{t-1} + L_{t-2}|
+    - "label_entropy"     # H(y): Shannon entropy of local client label distribution (non-IID skew)
   normalization:
-    loss_max: 5.0         # Normalization divisor for local loss: [0.0, 5.0] -> [0.0, 1.0]
-    variance_max: 2.0     # Normalization divisor for feature variance: [0.0, 2.0] -> [0.0, 1.0]
-    latency_max: 10.0     # Normalization divisor for step latency (seconds): [0.0, 10.0] -> [0.0, 1.0]
-    bandwidth_min: 1.0    # Min bandwidth (Mbps): [1.0, 20.0] -> [0.0, 1.0]
+    loss_min: 0.0         # Normalization divisor for local loss: [0.0, 5.0] -> [-1.0, 1.0]
+    loss_max: 5.0
+    variance_min: 0.0     # Normalization divisor for feature variance: [0.0, 2.0] -> [-1.0, 1.0]
+    variance_max: 2.0
+    latency_min: 0.0      # Normalization divisor for step latency (seconds): [0.0, 10.0] -> [-1.0, 1.0]
+    latency_max: 10.0
+    bandwidth_min: 1.0    # Min bandwidth (Mbps): [1.0, 20.0] -> [-1.0, 1.0]
     bandwidth_max: 20.0   # Max bandwidth (Mbps) for high-compute nodes
-    curvature_max: 2.0    # Normalization divisor for loss curvature: [0.0, 2.0] -> [0.0, 1.0]
+    entropy_min: 0.0      # Min Shannon label entropy (monoculture non-IID) -> -1.0
+    entropy_max: 1.6094   # Max Shannon label entropy ln(5) (uniform balanced IID) -> +1.0
   bandwidth_simulation:
     distribution: "uniform"   # "uniform" or "lognormal"
     min_mbps: 1.0
@@ -32,15 +36,18 @@ actions:
   spline_orders: [2, 3, 4]     # Spline polynomial degree k
   num_actions_per_client: 12   # 4 x 3 = 12 discrete configurations
 
-# Multi-Objective Calibrated Reward:
-# R_t = Scale * Effective_ΔAcc - β1 * ParamPenalty - β2 * LatencyPenalty - β3 * Smoothness
+# Strict Accuracy-Constrained Reward:
+# R_t = R_acc + R_boost - ParamPenalty - LatencyPenalty - SmoothnessPenalty
 reward:
   eval_split: "val"            # Evaluate on validation split for reward to prevent test set leakage
   accuracy_metric: "macro_f1"  # Headline metric: "macro_f1" or "balanced_accuracy" or "accuracy"
-  scale_acc: 100.0             # Dimensionless scaling factor for delta macro F1
+  scale_acc: 100.0             # Dimensionless scaling factor for positive accuracy improvement (acc_diff * 100.0)
+  tolerance_threshold: 0.005   # 0.5% tolerance threshold for accuracy drop
+  acc_penalty_mode: "exponential" # "exponential" (-10.0 * exp(|acc_diff|)) or "linear" (-10.0 * |acc_diff|)
+  compression_booster_weight: 0.20 # Parameter compression ratio secondary booster weight (w_boost * CR)
   alpha_abs: 0.5               # Small absolute level reward term to guide policy towards higher accuracy
-  transient_downweight: true   # Down-weight round 1 and 2 initialization transients (0.1, 0.5, 1.0)
-  beta1: 2.0                   # Asymmetric parameter penalty coefficient (hard constraint relative to 42,792)
+  transient_downweight: false  # Strict accuracy constraint active throughout all rounds
+  beta1: 2.0                   # Asymmetric parameter penalty coefficient for exceeding budget
   beta2: 0.1                   # Normalized latency penalty coefficient
   beta3: 0.02                  # Action smoothness regularization coefficient: - β3 * ||a_t - a_{t-1}||_1
   delta_clip: 0.04             # Clip delta accuracy to [-0.04, 0.04] for stable value estimation

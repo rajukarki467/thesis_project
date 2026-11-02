@@ -4,16 +4,22 @@ Gymnasium Federated Reinforcement Learning Environment for Resource-Adaptive KAN
 Mathematical Formulation (Section 3.2.4 & Section 3.2.5 of the Thesis Proposal):
 - State/Observation Space:
     S_t = [S_1^t, S_2^t, ..., S_N^t]^T in R^{N x 5}
-    Normalized to Box(low=0.0, high=1.0, shape=(N, 5), dtype=np.float32)
-    where each S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, κ^i].
+    Normalized to Box(low=-1.0, high=1.0, shape=(N, 5), dtype=np.float32)
+    where each S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)].
+    H(y^i) is the Shannon entropy of local client training labels (quantifying non-IID data skew).
 
 - Action Space:
     a_t = (a_1^t, a_2^t, ..., a_N^t) in MultiDiscrete([12] * N)
     where each a_i^t maps to (G_i^t, k_i^t) in {3, 5, 7, 10} x {2, 3, 4} (12 configurations).
 
-- Multi-Objective Step Reward (Equation 7):
-    R_t = ΔAcc_global - λ1 * Σ_{i=1}^N Params(G_i^t, k_i^t) - λ2 * Σ_{i=1}^N Δτ_i^t
-    where ΔAcc_global = Acc_t - Acc_{t-1}.
+- Strict Accuracy-Constrained Step Reward Function:
+    R_t = R_acc + R_boost - ParamPenalty - LatencyPenalty - SmoothnessPenalty
+    where:
+    - If acc_diff < -0.005 (0.5% tolerance threshold):
+        R_acc = -10.0 * exp(|acc_diff|)  (exponential penalty to prevent policy collapse)
+    - If acc_diff > 0:
+        R_acc = acc_diff * 100.0         (scaled positive improvement)
+    - Parameter compression ratio acts as a secondary booster (gated on accuracy preservation).
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ import yaml
 from src.environment.telemetry import (
     ClientHardwareProfile,
     TelemetryTracker,
+    compute_label_entropy,
     create_heterogeneous_profiles,
 )
 from src.federated.client import FlowerECGClient
@@ -212,6 +219,10 @@ class FederatedKANEnv(gym.Env):
         self.target_budget = float(self.baseline_budget * self.target_budget_ratio)
 
         self.scale_acc = float(reward_cfg.get("scale_acc", 100.0))
+        self.acc_tolerance = float(reward_cfg.get("tolerance_threshold", 0.005))
+        self.acc_penalty_mode = str(reward_cfg.get("acc_penalty_mode", "exponential")).lower()
+        self.compression_booster_weight = float(reward_cfg.get("compression_booster_weight", 0.20))
+
         if lambda1 is not None:
             self.beta1 = float(lambda1)
         else:
@@ -269,9 +280,10 @@ class FederatedKANEnv(gym.Env):
 
         self.num_actions_per_client = len(self.action_tuples)
 
-        # Observation Space: Matrix S_t in [0.0, 1.0]^{N x 5}
+        # Observation Space: Matrix S_t in [-1.0, 1.0]^{N x 5}
+        # S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)]
         self.observation_space = spaces.Box(
-            low=0.0,
+            low=-1.0,
             high=1.0,
             shape=(self.num_clients, 5),
             dtype=np.float32,
@@ -288,13 +300,16 @@ class FederatedKANEnv(gym.Env):
             client_datasets=client_datasets, test_data=test_data, val_data=val_data
         )
 
-        # Compute empirical input variances per client
+        # Compute empirical input variances and label Shannon entropies per client
         self.client_variances: Dict[int, float] = {}
-        for cid, (x_c, _) in self.client_datasets.items():
+        self.client_entropies: Dict[int, float] = {}
+        n_classes = int(self.layers_hidden[-1]) if hasattr(self, "layers_hidden") and self.layers_hidden else 5
+        for cid, (x_c, y_c) in self.client_datasets.items():
             if len(x_c) > 1:
                 self.client_variances[cid] = float(np.mean(np.var(x_c, axis=0)))
             else:
                 self.client_variances[cid] = 1.0
+            self.client_entropies[cid] = compute_label_entropy(y_c, num_classes=n_classes)
 
         # 4. Initialize Hardware Profiles and Telemetry Tracker
         norm_bounds = telemetry_cfg.get("normalization", {})
@@ -307,9 +322,11 @@ class FederatedKANEnv(gym.Env):
         self.telemetry_tracker = TelemetryTracker(
             client_ids=self.client_ids,
             client_variances=self.client_variances,
+            client_entropies=self.client_entropies,
             normalization_bounds=norm_bounds,
             bandwidth_cfg=bw_sim_cfg,
             hardware_profiles=self.hardware_profiles,
+            num_classes=n_classes,
             seed=self.global_seed,
         )
 
@@ -804,7 +821,7 @@ class FederatedKANEnv(gym.Env):
             else (eval_loss, eval_metrics)
         )
 
-        # 4. Multi-Objective Reward Calculation (Calibrated Dimensionless Formulation)
+        # 4. Strict Accuracy-Constrained Reward Formulation
         if self.accuracy_metric == "macro_f1":
             metric_curr = f1_curr
             metric_prev = self.f1_prev
@@ -815,45 +832,63 @@ class FederatedKANEnv(gym.Env):
             metric_curr = acc_curr
             metric_prev = self.acc_prev
 
-        raw_delta = float(metric_curr - metric_prev)
+        acc_diff = float(metric_curr - metric_prev)
+        raw_delta = acc_diff
+        effective_delta = acc_diff
+        delta_acc_clipped = float(np.clip(acc_diff, -self.delta_clip, self.delta_clip))
 
-        # Transient down-weighting: down-weight round 1 and 2 initialization transients
-        if self.transient_downweight:
-            if round_num == 1:
-                round_weight = 0.1
-            elif round_num == 2:
-                round_weight = 0.5
+        # 1. Strict Accuracy Constraint:
+        # If current global accuracy drops below previous round's accuracy minus 0.5% tolerance threshold:
+        # acc_curr < acc_prev - 0.005 <=> acc_diff < -0.005
+        if acc_diff < -self.acc_tolerance:
+            # Apply exponential penalty: steep exponential scaling to strongly deter policy collapse
+            if self.acc_penalty_mode == "linear":
+                acc_term = -10.0 * abs(acc_diff)
             else:
-                round_weight = 1.0
+                acc_term = -10.0 * float(np.exp(abs(acc_diff)))
+            accuracy_collapsed = True
+        elif acc_diff > 0:
+            # Scale positive accuracy improvement higher (acc_diff * 100.0)
+            # Performance remains the primary optimization target
+            acc_term = float(acc_diff * self.scale_acc)
+            accuracy_collapsed = False
         else:
-            round_weight = 1.0
+            # Minor stochastic fluctuation within 0.5% tolerance [-acc_tolerance, 0.0]
+            acc_term = float(acc_diff * self.scale_acc)
+            accuracy_collapsed = False
 
-        effective_delta = raw_delta * round_weight
-        delta_acc_clipped = float(np.clip(effective_delta, -self.delta_clip, self.delta_clip))
-
-        # Small absolute level bonus to provide steady gradient towards high accuracy
-        abs_level_bonus = float(self.alpha_abs * max(0.0, metric_curr - 0.20))
-        acc_term = float(self.scale_acc * delta_acc_clipped + abs_level_bonus)
+        if self.alpha_abs > 0.0 and not accuracy_collapsed:
+            acc_term += float(self.alpha_abs * max(0.0, metric_curr - 0.20))
 
         sum_params = float(sum(client_params_list))
         sum_latency = float(sum(client_latencies_list))
         mean_params = float(np.mean(client_params_list))
         mean_latency = float(np.mean(client_latencies_list))
 
-        # Budget constraint relative to fixed (5,3) fleet (B_ref = 42,792)
+        # Parameter compression ratio relative to baseline budget B_ref (e.g. 42,792):
+        # compression_ratio = max(0.0, (B_ref - sum_params) / B_ref)
         relative_param_cost = (
             float((sum_params - self.target_budget) / self.baseline_budget)
             if self.baseline_budget > 0
             else 0.0
         )
+        compression_ratio = max(0.0, -relative_param_cost)
+
+        # Treat parameter compression ratio as a secondary booster, not a dominant penalty:
         if relative_param_cost > 0:
-            # Asymmetric penalty: heavily punish exceeding budget (linear + quadratic)
+            # Over-budget penalty (exceeding parameter budget B_ref)
             param_penalty = float(
-                self.beta1 * (relative_param_cost + 4.0 * (relative_param_cost ** 2))
+                self.beta1 * (relative_param_cost + 2.0 * (relative_param_cost ** 2))
             )
+            compression_booster = 0.0
         else:
-            # Compression incentive when below budget (param_penalty < 0 => reward bonus)
-            param_penalty = float(self.beta1 * relative_param_cost)
+            param_penalty = 0.0
+            if accuracy_collapsed:
+                # Gated: Never boost compression when accuracy constraint is violated!
+                compression_booster = 0.0
+            else:
+                # Secondary booster: scaled modestly
+                compression_booster = float(self.compression_booster_weight * compression_ratio)
 
         latency_penalty = float(self.beta2 * (mean_latency / max(1e-6, self.baseline_latency)))
 
@@ -866,7 +901,10 @@ class FederatedKANEnv(gym.Env):
         smoothness_penalty = float(self.beta3 * smoothness_norm)
         config_changes = int(np.sum(actions != self.prev_actions))
 
-        raw_reward = float(acc_term - param_penalty - latency_penalty - smoothness_penalty)
+        # Total multi-objective reward
+        raw_reward = float(
+            acc_term + compression_booster - param_penalty - latency_penalty - smoothness_penalty
+        )
         reward = float(np.clip(raw_reward, self.reward_clip_min, self.reward_clip_max))
 
         # Update previous actions, accuracy, and round counter
@@ -879,7 +917,7 @@ class FederatedKANEnv(gym.Env):
         # 5. Update Telemetry and Collect New Observation S^{t+1}
         new_obs = self.telemetry_tracker.update_round(round_metrics)
         assert np.all(np.isfinite(new_obs)), f"Non-finite values encountered in observation: {new_obs}"
-        new_obs = np.clip(new_obs, 0.0, 1.0)
+        new_obs = np.clip(new_obs, -1.0, 1.0)
 
         # 6. Check Termination
         terminated = bool(self.current_round >= self.max_rounds)
@@ -951,9 +989,12 @@ class FederatedKANEnv(gym.Env):
             "config_histogram": config_hist,
             "reward_components": {
                 "acc_term": acc_term,
-                "delta_accuracy": acc_term - smoothness_penalty,
+                "delta_accuracy": acc_term - smoothness_penalty + compression_booster,
                 "raw_delta_acc": raw_delta,
-                "delta_acc_clipped": delta_acc_clipped,
+                "acc_diff": acc_diff,
+                "accuracy_collapsed": accuracy_collapsed,
+                "compression_ratio": compression_ratio,
+                "compression_booster": compression_booster,
                 "param_penalty": param_penalty,
                 "relative_param_cost": relative_param_cost,
                 "parameter_savings_pct": savings_pct,
@@ -1109,7 +1150,7 @@ def run_sanity_check(
     print(f"  Initial Test Macro F1: {info['global_macro_f1']:.4f}")
 
     assert obs.shape == (env.num_clients, 5), f"Unexpected shape {obs.shape}"
-    assert np.all(obs >= 0.0) and np.all(obs <= 1.0), "Observation out of bounds [0, 1]!"
+    assert np.all(obs >= -1.0) and np.all(obs <= 1.0), "Observation out of bounds [-1, 1]!"
 
     # Perform rollout
     total_reward = 0.0
@@ -1143,7 +1184,7 @@ def run_sanity_check(
         print(f"  Terminated: {terminated} | Truncated: {truncated}")
 
         assert next_obs.shape == (env.num_clients, 5)
-        assert np.all(next_obs >= 0.0) and np.all(next_obs <= 1.0)
+        assert np.all(next_obs >= -1.0) and np.all(next_obs <= 1.0), "Next observation out of bounds [-1, 1]!"
 
     print("\n" + "=" * 78)
     print(f"SANITY CHECK COMPLETE: 2-step rollout succeeded! Total Reward: {total_reward:+.6f}")
