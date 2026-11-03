@@ -156,6 +156,7 @@ class FederatedKANEnv(gym.Env):
         sticky_k: int = 1,
         target_budget_ratio: Optional[float] = None,
         accuracy_metric: Optional[str] = None,
+        reference_mode: Optional[str] = None,
         num_clients: Optional[int] = None,
         max_rounds: Optional[int] = None,
         lambda1: Optional[float] = None,
@@ -264,10 +265,19 @@ class FederatedKANEnv(gym.Env):
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # FastKAN architecture parameters
+        # FastKAN architecture parameters and server reference mode
         self.layers_hidden = env_cfg.get("reference_hidden", [32, 16, 5])
-        self.ref_grid_size = int(env_cfg.get("reference_grid_size", 5))
-        self.ref_spline_order = int(env_cfg.get("reference_spline_order", 3))
+        self.reference_mode = str(
+            reference_mode
+            if reference_mode is not None
+            else self.config.get("server", {}).get("reference_mode", env_cfg.get("reference_mode", "fixed_5_3"))
+        ).lower()
+        if self.reference_mode == "canonical_max":
+            self.ref_grid_size = 10
+            self.ref_spline_order = 4
+        else:
+            self.ref_grid_size = int(env_cfg.get("reference_grid_size", 5))
+            self.ref_spline_order = int(env_cfg.get("reference_spline_order", 3))
 
         # 2. Define Observation and Action Spaces
         # Select action set based on aggregation mode

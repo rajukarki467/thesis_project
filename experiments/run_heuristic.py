@@ -81,12 +81,9 @@ def run_heuristic_simulation(
         config_path=config_path,
         alpha=alpha,
         max_rounds=num_rounds,
+        reference_mode=reference_mode,
         seed=seed,
     )
-    # Configure environment reference model if canonical_max requested
-    if reference_mode == "canonical_max":
-        env.ref_grid_size = 10
-        env.ref_spline_order = 4
 
     controller = HeuristicController(
         config_path=config_path,

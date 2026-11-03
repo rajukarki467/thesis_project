@@ -1,0 +1,43 @@
+{
+  "fixed_5_3_summary": [
+    {
+      "reference_mode": "fixed_5_3",
+      "alpha": 0.5,
+      "seed": 42,
+      "server_grid": "(5,3)",
+      "server_params": 5349,
+      "final_accuracy": 0.8104539202200826,
+      "final_macro_f1": 0.4447880407804462,
+      "final_loss": 0.6581115815687049,
+      "mean_params_per_round": 51080.0,
+      "mean_latency_s": 14.188014802654825,
+      "cumulative_comm_MB": 3.581,
+      "execution_time_s": 58.75,
+      "proj_err_10_4_roundtrip": 1.9743184299508516
+    }
+  ],
+  "canonical_max_summary": [
+    {
+      "reference_mode": "canonical_max",
+      "alpha": 0.5,
+      "seed": 42,
+      "server_grid": "(10,4)",
+      "server_params": 8901,
+      "final_accuracy": 0.7998349381017882,
+      "final_macro_f1": 0.4281691183936277,
+      "final_loss": 0.73624477129117,
+      "mean_params_per_round": 51080.0,
+      "mean_latency_s": 13.515986069938114,
+      "cumulative_comm_MB": 4.665,
+      "execution_time_s": 59.12,
+      "proj_err_10_4_roundtrip": 0.0011031054096392
+    }
+  ],
+  "projection_distortion": {
+    "10_4_down_to_5_3_roundtrip_err": 1.9743184299508516,
+    "5_3_up_to_10_4_roundtrip_err": 0.0011031054096392,
+    "7_4_down_to_5_3_roundtrip_err": 2.976962973959509,
+    "7_4_up_to_10_4_roundtrip_err": 0.0329821097758449,
+    "ratio_distortion_reduction": 1789.8
+  }
+}
