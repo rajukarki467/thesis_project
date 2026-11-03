@@ -1,0 +1,147 @@
+{
+  "controller": "HeuristicController",
+  "alpha": 0.5,
+  "num_rounds": 10,
+  "num_clients": 8,
+  "reference_mode": "fixed_5_3",
+  "seed": 42,
+  "total_execution_time_seconds": 58.74797556000067,
+  "initial_accuracy": 0.07383768913342503,
+  "final_accuracy": 0.8104539202200826,
+  "initial_macro_f1": 0.05213705425700579,
+  "final_macro_f1": 0.4447880407804462,
+  "final_loss": 0.6581115815687049,
+  "mean_parameters_per_round": 51080.0,
+  "mean_latency_per_round": 14.188014802654825,
+  "total_reward": 2.984790785098946,
+  "final_client_assignments": {
+    "0": {
+      "client_id": 0,
+      "tier": 1,
+      "device_name": "Smartwatch",
+      "mode_last_5": [
+        3,
+        2
+      ],
+      "mode_params": 3573,
+      "best_val_f1_config": [
+        3,
+        2
+      ],
+      "best_params": 3573,
+      "disagreement": false
+    },
+    "1": {
+      "client_id": 1,
+      "tier": 1,
+      "device_name": "Smartwatch",
+      "mode_last_5": [
+        5,
+        3
+      ],
+      "mode_params": 5349,
+      "best_val_f1_config": [
+        5,
+        3
+      ],
+      "best_params": 5349,
+      "disagreement": false
+    },
+    "2": {
+      "client_id": 2,
+      "tier": 2,
+      "device_name": "Smartphone",
+      "mode_last_5": [
+        5,
+        4
+      ],
+      "mode_params": 5941,
+      "best_val_f1_config": [
+        5,
+        4
+      ],
+      "best_params": 5941,
+      "disagreement": false
+    },
+    "3": {
+      "client_id": 3,
+      "tier": 2,
+      "device_name": "Smartphone",
+      "mode_last_5": [
+        7,
+        4
+      ],
+      "mode_params": 7125,
+      "best_val_f1_config": [
+        7,
+        4
+      ],
+      "best_params": 7125,
+      "disagreement": false
+    },
+    "4": {
+      "client_id": 4,
+      "tier": 2,
+      "device_name": "Smartphone",
+      "mode_last_5": [
+        5,
+        2
+      ],
+      "mode_params": 4757,
+      "best_val_f1_config": [
+        5,
+        2
+      ],
+      "best_params": 4757,
+      "disagreement": false
+    },
+    "5": {
+      "client_id": 5,
+      "tier": 3,
+      "device_name": "Local Clinic",
+      "mode_last_5": [
+        7,
+        3
+      ],
+      "mode_params": 6533,
+      "best_val_f1_config": [
+        7,
+        3
+      ],
+      "best_params": 6533,
+      "disagreement": false
+    },
+    "6": {
+      "client_id": 6,
+      "tier": 3,
+      "device_name": "Local Clinic",
+      "mode_last_5": [
+        10,
+        4
+      ],
+      "mode_params": 8901,
+      "best_val_f1_config": [
+        10,
+        4
+      ],
+      "best_params": 8901,
+      "disagreement": false
+    },
+    "7": {
+      "client_id": 7,
+      "tier": 4,
+      "device_name": "Hospital Server",
+      "mode_last_5": [
+        10,
+        4
+      ],
+      "mode_params": 8901,
+      "best_val_f1_config": [
+        10,
+        4
+      ],
+      "best_params": 8901,
+      "disagreement": false
+    }
+  }
+}

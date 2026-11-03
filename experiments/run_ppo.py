@@ -35,6 +35,7 @@ import yaml
 
 from src.controllers.ppo_controller import PPOController, PPOLoggingCallback
 from src.environment.f1_env import FederatedKANEnv, action_to_gk
+from src.environment.fleet import FleetConfig
 from src.environment.surrogate_env import SurrogateFederatedKANEnv
 from src.utils.reproducibility import set_seed
 
@@ -65,6 +66,7 @@ def train_ppo(
     timesteps: int = 20000,
     config_path: str = "configs/ppo.yaml",
     checkpoint_path: str = "results/adaptive_kan/checkpoints/ppo_model.zip",
+    fleet_config: Optional[Union[str, Path, FleetConfig]] = None,
     log_dir: str = "logs/ppo",
     seed: int = 42,
     use_action_prior: bool = False,
@@ -85,6 +87,7 @@ def train_ppo(
     controller = PPOController(
         env=env,
         config_path=config_path,
+        fleet_config=fleet_config,
         learning_rate=learning_rate,
         n_steps=effective_n_steps,
         batch_size=effective_batch,
@@ -110,6 +113,8 @@ def evaluate_ppo(
     alpha: float,
     num_rounds: int = 10,
     config_path: str = "configs/ppo.yaml",
+    fleet_config: Optional[Union[str, Path, FleetConfig]] = None,
+    reference_mode: str = "fixed_5_3",
     output_dir: str = "results/adaptive_kan",
     seed: int = 42,
     verbose: bool = True,
@@ -126,6 +131,8 @@ def evaluate_ppo(
 
     eval_env = FederatedKANEnv(
         config_path=config_path,
+        fleet_config=fleet_config,
+        reference_mode=reference_mode,
         alpha=alpha,
         max_rounds=num_rounds,
         seed=seed,
@@ -290,6 +297,14 @@ def main():
     parser.add_argument("--log_dir", type=str, default="logs/ppo", help="PPO training log directory")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed")
     parser.add_argument("--use-action-prior", action="store_true", help="Initialize action_net bias toward (5, 3)")
+    parser.add_argument("--fleet", type=str, default="configs/fleet.yaml", help="Path to fleet YAML config")
+    parser.add_argument(
+        "--reference_mode",
+        type=str,
+        default="fixed_5_3",
+        choices=["fixed_5_3", "canonical_max"],
+        help="Server reference model aggregation mode",
+    )
     parser.add_argument("--real-env", action="store_true", help="Train on full FL environment instead of surrogate")
     parser.add_argument("--dry-run", action="store_true", help="Quick dry-run validation (16 timesteps, 2 rounds)")
     args = parser.parse_args()
@@ -297,6 +312,7 @@ def main():
     alphas = args.alpha if isinstance(args.alpha, list) else [args.alpha]
     checkpoint_path = PROJECT_ROOT / args.checkpoint
     output_dir = PROJECT_ROOT / args.output_dir
+    fleet_cfg = FleetConfig(args.fleet) if args.fleet else None
 
     if args.dry_run:
         logger.info("Executing DRY-RUN validation mode (3 rounds)...")
@@ -314,6 +330,7 @@ def main():
             logger.info("Using SurrogateFederatedKANEnv for high-throughput PPO policy training...")
             train_env = SurrogateFederatedKANEnv(
                 config_path=args.config,
+                fleet_config=fleet_cfg,
                 aggregation_mode=args.aggregation_mode,
                 max_rounds=eval_rounds,
                 seed=args.seed,
@@ -322,6 +339,8 @@ def main():
             logger.info("Using real FederatedKANEnv for PPO policy training...")
             train_env = FederatedKANEnv(
                 config_path=args.config,
+                fleet_config=fleet_cfg,
+                reference_mode=args.reference_mode,
                 alpha=0.5,
                 max_rounds=eval_rounds,
                 aggregation_mode=args.aggregation_mode,
@@ -333,6 +352,7 @@ def main():
             timesteps=timesteps,
             config_path=args.config,
             checkpoint_path=str(checkpoint_path),
+            fleet_config=fleet_cfg,
             log_dir=args.log_dir,
             seed=args.seed,
             use_action_prior=args.use_action_prior,
@@ -344,7 +364,7 @@ def main():
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"PPO checkpoint not found at {checkpoint_path}. Train model first.")
             logger.info(f"Loading trained PPO model from {checkpoint_path}...")
-            controller = PPOController(config_path=args.config, verbose=0)
+            controller = PPOController(config_path=args.config, fleet_config=fleet_cfg, verbose=0)
             controller.load(str(checkpoint_path))
 
         summaries = []
@@ -354,6 +374,8 @@ def main():
                 alpha=a,
                 num_rounds=eval_rounds,
                 config_path=args.config,
+                fleet_config=fleet_cfg,
+                reference_mode=args.reference_mode,
                 output_dir=str(output_dir),
                 seed=args.seed,
             )

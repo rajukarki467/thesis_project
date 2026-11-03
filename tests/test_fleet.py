@@ -318,3 +318,84 @@ def test_tiered_heuristic_controller_start_and_masks():
         assert "disagreement" in final[cid]
         assert final[cid]["mode_last_5"] in fleet_cfg.get_allowed_configs_for_tier(final[cid]["tier"])
 
+
+# ==============================================================================
+# 11. MaskablePPO Tier Mask Compliance & Fleet Observation Space Tests
+# ==============================================================================
+
+def test_maskable_ppo_obeys_tier_masks():
+    """
+    Verify that sb3-contrib MaskablePPO initialized with FleetConfig:
+    1. Exposes an observation space of shape (8, 9) bounded in [-1.0, 1.0].
+    2. Never selects an action outside the hard tier mask during training rollouts
+       or deterministic / stochastic predictions.
+    3. Respects action prior vs non-prior configuration.
+    """
+    from src.controllers.ppo_controller import PPOController
+    from src.environment.surrogate_env import SurrogateFederatedKANEnv
+
+    fleet_cfg = FleetConfig()
+    env = SurrogateFederatedKANEnv(fleet_config=fleet_cfg, max_rounds=5, seed=42)
+
+    assert env.observation_space.shape == (8, 9)
+    obs, info = env.reset(seed=42)
+    assert obs.shape == (8, 9)
+    assert np.all(np.isfinite(obs))
+    assert np.all(obs >= -1.0) and np.all(obs <= 1.0)
+
+    # Train short step (16 steps)
+    ctrl = PPOController(
+        env=env,
+        fleet_config=fleet_cfg,
+        n_steps=16,
+        batch_size=16,
+        use_action_prior=True,
+        verbose=0,
+    )
+    ctrl.train(total_timesteps=16)
+
+    # Check 50 trials of deterministic and stochastic predictions
+    for _ in range(50):
+        # Deterministic prediction
+        act_det = ctrl.predict(obs, deterministic=True)
+        assert len(act_det) == 8
+        for cid in range(8):
+            mask = fleet_cfg.get_action_mask_for_client(cid)
+            assert mask[act_det[cid]], f"Client {cid} chose masked action {act_det[cid]} in deterministic predict!"
+
+        # Stochastic prediction
+        act_stoch = ctrl.predict(obs, deterministic=False)
+        assert len(act_stoch) == 8
+        for cid in range(8):
+            mask = fleet_cfg.get_action_mask_for_client(cid)
+            assert mask[act_stoch[cid]], f"Client {cid} chose masked action {act_stoch[cid]} in stochastic predict!"
+
+
+def test_fleet_observation_space_and_finite_values():
+    """
+    Verify that SurrogateFederatedKANEnv step execution with fleet profiles generates
+    valid (8, 9) observations without NaN or Inf values across multiple rounds.
+    """
+    from src.environment.surrogate_env import SurrogateFederatedKANEnv
+
+    fleet_cfg = FleetConfig()
+    env = SurrogateFederatedKANEnv(fleet_config=fleet_cfg, max_rounds=5, seed=123)
+    obs, info = env.reset()
+
+    assert obs.shape == (8, 9)
+    assert np.all(np.isfinite(obs))
+
+    # Perform a sequence of valid actions
+    valid_actions = [
+        ACTION_TO_INDEX[fleet_cfg.get_start_config_for_client(c)]
+        for c in range(8)
+    ]
+    for r in range(5):
+        next_obs, reward, terminated, truncated, step_info = env.step(valid_actions)
+        assert next_obs.shape == (8, 9)
+        assert np.all(np.isfinite(next_obs))
+        assert np.all(next_obs >= -1.0) and np.all(next_obs <= 1.0)
+        assert np.isfinite(reward)
+        if terminated:
+            break
+

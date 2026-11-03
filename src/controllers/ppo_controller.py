@@ -31,9 +31,13 @@ import numpy as np
 import stable_baselines3 as sb3
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 import torch
 import torch.nn as nn
 import yaml
+
+from src.environment.fleet import FleetConfig, get_tier_one_hot
 
 logger = logging.getLogger("ppo_controller")
 
@@ -233,6 +237,8 @@ class PPOController:
         self,
         env: Optional[gym.Env] = None,
         config_path: Optional[Union[str, Path]] = "configs/ppo.yaml",
+        fleet_config: Optional[Union[str, Path, FleetConfig]] = None,
+        use_action_masking: Optional[bool] = None,
         device: Optional[Union[str, torch.device]] = None,
         verbose: int = 1,
         **kwargs,
@@ -242,6 +248,27 @@ class PPOController:
 
         self.env = env
         self.verbose = verbose
+
+        # Fleet configuration
+        if fleet_config is not None:
+            self.fleet_config = fleet_config if isinstance(fleet_config, FleetConfig) else FleetConfig(fleet_config)
+        elif hasattr(env, "fleet_config") and env.fleet_config is not None:
+            self.fleet_config = env.fleet_config
+        elif hasattr(env, "unwrapped") and hasattr(env.unwrapped, "fleet_config") and env.unwrapped.fleet_config is not None:
+            self.fleet_config = env.unwrapped.fleet_config
+        else:
+            self.fleet_config = None
+
+        # Determine if action masking should be enabled
+        if use_action_masking is not None:
+            self.use_action_masking = bool(use_action_masking)
+        else:
+            has_mask_method = self.env is not None and (
+                hasattr(self.env, "action_masks")
+                or hasattr(self.env, "get_action_masks")
+                or hasattr(getattr(self.env, "unwrapped", self.env), "action_masks")
+            )
+            self.use_action_masking = bool(has_mask_method or self.fleet_config is not None)
 
         # Determine device
         if device is not None:
@@ -271,73 +298,101 @@ class PPOController:
         ))
 
         if self.env is not None:
-            self.model = PPO(
-                policy="MlpPolicy",
-                env=self.env,
-                learning_rate=self.learning_rate,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
-                n_epochs=self.n_epochs,
-                gamma=self.gamma,
-                gae_lambda=self.gae_lambda,
-                clip_range=self.clip_range,
-                clip_range_vf=self.clip_range_vf,
-                ent_coef=self.ent_coef,
-                vf_coef=self.vf_coef,
-                max_grad_norm=self.max_grad_norm,
-                policy_kwargs=policy_kwargs,
-                verbose=self.verbose,
-                seed=self.seed,
-                device=self.device_str,
-                **kwargs,
-            )
+            if self.use_action_masking:
+                if not isinstance(self.env, ActionMasker):
+                    def _get_masks(e):
+                        if hasattr(e, "action_masks"):
+                            return e.action_masks()
+                        if hasattr(e, "get_action_masks"):
+                            return e.get_action_masks()
+                        if hasattr(getattr(e, "unwrapped", e), "action_masks"):
+                            return getattr(e, "unwrapped", e).action_masks()
+                        if self.fleet_config is not None:
+                            return self.fleet_config.get_full_action_mask()
+                        return np.ones(96, dtype=bool)
+                    self.env = ActionMasker(self.env, _get_masks)
+
+                self.model = MaskablePPO(
+                    policy="MlpPolicy",
+                    env=self.env,
+                    learning_rate=self.learning_rate,
+                    n_steps=self.n_steps,
+                    batch_size=self.batch_size,
+                    n_epochs=self.n_epochs,
+                    gamma=self.gamma,
+                    gae_lambda=self.gae_lambda,
+                    clip_range=self.clip_range,
+                    clip_range_vf=self.clip_range_vf,
+                    ent_coef=self.ent_coef,
+                    vf_coef=self.vf_coef,
+                    max_grad_norm=self.max_grad_norm,
+                    policy_kwargs=policy_kwargs,
+                    verbose=self.verbose,
+                    seed=self.seed,
+                    device=self.device_str,
+                    **kwargs,
+                )
+                self.is_maskable = True
+            else:
+                self.model = PPO(
+                    policy="MlpPolicy",
+                    env=self.env,
+                    learning_rate=self.learning_rate,
+                    n_steps=self.n_steps,
+                    batch_size=self.batch_size,
+                    n_epochs=self.n_epochs,
+                    gamma=self.gamma,
+                    gae_lambda=self.gae_lambda,
+                    clip_range=self.clip_range,
+                    clip_range_vf=self.clip_range_vf,
+                    ent_coef=self.ent_coef,
+                    vf_coef=self.vf_coef,
+                    max_grad_norm=self.max_grad_norm,
+                    policy_kwargs=policy_kwargs,
+                    verbose=self.verbose,
+                    seed=self.seed,
+                    device=self.device_str,
+                    **kwargs,
+                )
+                self.is_maskable = False
+
             if self.use_action_prior:
                 self._init_policy_bias()
         else:
             self.model = None
+            self.is_maskable = self.use_action_masking
 
     def _init_policy_bias(self) -> None:
         """
         Initialize action_net bias taking into account client hardware tiers.
-        Allocates coarse (G, k) to edge tier and fine (G, k) to compute tier.
-        Only applied when use_action_prior is True.
+        When use_action_prior is True:
+        - Tiers 1 & 2: incentivizes (5, 3) (Action 4)
+        - Tier 3: incentivizes start config (7, 3) (Action 7)
+        - Tier 4: incentivizes sole allowed config (10, 4) (Action 11)
+        When use_action_prior is False: leaves default un-biased.
         """
-        if self.model is None or not hasattr(self.model, "policy"):
+        if not self.use_action_prior or self.model is None or not hasattr(self.model, "policy"):
             return
         action_net = getattr(self.model.policy, "action_net", None)
         if action_net is not None and getattr(action_net, "bias", None) is not None:
             with torch.no_grad():
                 b = action_net.bias
                 num_logits = b.numel()
-                n_actions = 12
-                if self.env is not None and hasattr(self.env.action_space, "nvec"):
-                    n_actions = int(self.env.action_space.nvec[0])
-                if n_actions == 12:
-                    num_clients = num_logits // 12
-                    edge_indices = set(range(num_clients // 2))
-                    if self.env is not None:
-                        real_env = getattr(self.env, "unwrapped", self.env)
-                        if hasattr(real_env, "telemetry_tracker"):
-                            edge_cids = real_env.telemetry_tracker.get_tier_clients("edge")
-                            edge_indices = set(int(cid) for cid in edge_cids if str(cid).isdigit())
+                num_clients = num_logits // 12
+                if self.fleet_config is not None:
+                    tier_map = self.fleet_config.client_tier_map
+                else:
+                    tier_map = {c: (1 if c < num_clients // 2 else 3) for c in range(num_clients)}
 
-                    for c in range(num_clients):
-                        if c in edge_indices:
-                            # Edge tier: incentivize smaller G in {3, 5}, k in {2, 3}
-                            # Action 0: (3, 2), 1: (3, 3), 3: (5, 2), 4: (5, 3)
-                            b[c * 12 : c * 12 + 12] = -1.5
-                            b[c * 12 + 0] = 1.0   # (3, 2)
-                            b[c * 12 + 1] = 1.0   # (3, 3)
-                            b[c * 12 + 3] = 0.5   # (5, 2)
-                            b[c * 12 + 4] = 0.5   # (5, 3)
-                        else:
-                            # Compute tier: incentivize larger G in {7, 10}, k in {3, 4}
-                            # Action 7: (7, 3), 8: (7, 4), 10: (10, 3), 11: (10, 4)
-                            b[c * 12 : c * 12 + 12] = -1.5
-                            b[c * 12 + 7] = 0.5   # (7, 3)
-                            b[c * 12 + 8] = 1.0   # (7, 4)
-                            b[c * 12 + 10] = 1.0  # (10, 3)
-                            b[c * 12 + 11] = 1.2  # (10, 4)
+                for c in range(num_clients):
+                    tier = tier_map.get(c, 1)
+                    b[c * 12 : c * 12 + 12] = -1.0
+                    if tier in (1, 2):
+                        b[c * 12 + 4] = 1.5   # (5, 3) reference
+                    elif tier == 3:
+                        b[c * 12 + 7] = 1.5   # (7, 3) tier-3 start config
+                    elif tier == 4:
+                        b[c * 12 + 11] = 1.5  # (10, 4) tier-4 max config
 
     def _load_config(self, config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         """Load YAML configuration or return sensible defaults."""
@@ -356,33 +411,71 @@ class PPOController:
     def set_env(self, env: gym.Env) -> None:
         """Bind environment to PPO controller."""
         self.env = env
+        if self.use_action_masking and not isinstance(self.env, ActionMasker):
+            def _get_masks(e):
+                if hasattr(e, "action_masks"):
+                    return e.action_masks()
+                if hasattr(e, "get_action_masks"):
+                    return e.get_action_masks()
+                if hasattr(getattr(e, "unwrapped", e), "action_masks"):
+                    return getattr(e, "unwrapped", e).action_masks()
+                if self.fleet_config is not None:
+                    return self.fleet_config.get_full_action_mask()
+                return np.ones(96, dtype=bool)
+            self.env = ActionMasker(self.env, _get_masks)
+
         if self.model is not None:
-            self.model.set_env(env)
+            self.model.set_env(self.env)
         else:
             policy_kwargs = dict(
                 net_arch=dict(pi=[128, 128], vf=[128, 128]),
                 activation_fn=nn.ReLU,
             )
-            self.model = PPO(
-                policy="MlpPolicy",
-                env=self.env,
-                learning_rate=self.learning_rate,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
-                n_epochs=self.n_epochs,
-                gamma=self.gamma,
-                gae_lambda=self.gae_lambda,
-                clip_range=self.clip_range,
-                clip_range_vf=self.clip_range_vf,
-                ent_coef=self.ent_coef,
-                vf_coef=self.vf_coef,
-                max_grad_norm=self.max_grad_norm,
-                policy_kwargs=policy_kwargs,
-                verbose=self.verbose,
-                seed=self.seed,
-                device=self.device_str,
-            )
-            self._init_policy_bias()
+            if self.use_action_masking:
+                self.model = MaskablePPO(
+                    policy="MlpPolicy",
+                    env=self.env,
+                    learning_rate=self.learning_rate,
+                    n_steps=self.n_steps,
+                    batch_size=self.batch_size,
+                    n_epochs=self.n_epochs,
+                    gamma=self.gamma,
+                    gae_lambda=self.gae_lambda,
+                    clip_range=self.clip_range,
+                    clip_range_vf=self.clip_range_vf,
+                    ent_coef=self.ent_coef,
+                    vf_coef=self.vf_coef,
+                    max_grad_norm=self.max_grad_norm,
+                    policy_kwargs=policy_kwargs,
+                    verbose=self.verbose,
+                    seed=self.seed,
+                    device=self.device_str,
+                )
+                self.is_maskable = True
+            else:
+                self.model = PPO(
+                    policy="MlpPolicy",
+                    env=self.env,
+                    learning_rate=self.learning_rate,
+                    n_steps=self.n_steps,
+                    batch_size=self.batch_size,
+                    n_epochs=self.n_epochs,
+                    gamma=self.gamma,
+                    gae_lambda=self.gae_lambda,
+                    clip_range=self.clip_range,
+                    clip_range_vf=self.clip_range_vf,
+                    ent_coef=self.ent_coef,
+                    vf_coef=self.vf_coef,
+                    max_grad_norm=self.max_grad_norm,
+                    policy_kwargs=policy_kwargs,
+                    verbose=self.verbose,
+                    seed=self.seed,
+                    device=self.device_str,
+                )
+                self.is_maskable = False
+
+            if self.use_action_prior:
+                self._init_policy_bias()
 
     def train(
         self,
@@ -423,6 +516,7 @@ class PPOController:
         self,
         observation: np.ndarray,
         deterministic: bool = True,
+        action_masks: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Predict (G_i, k_i) action configurations for all clients given observation S^t.
@@ -430,9 +524,11 @@ class PPOController:
         Parameters
         ----------
         observation : np.ndarray
-            State matrix of shape (N, 5).
+            State matrix of shape (N, 5) or (N, 9).
         deterministic : bool
             Whether to use deterministic argmax actions (default True).
+        action_masks : Optional[np.ndarray]
+            Hard action mask array. If None and maskable, queried automatically.
 
         Returns
         -------
@@ -442,7 +538,22 @@ class PPOController:
         if self.model is None:
             raise ValueError("Model is not initialized. Train or load weights first.")
 
-        action, _ = self.model.predict(observation, deterministic=deterministic)
+        if getattr(self, "is_maskable", False) or isinstance(self.model, MaskablePPO):
+            if action_masks is None:
+                if hasattr(self.env, "action_masks"):
+                    action_masks = self.env.action_masks()
+                elif hasattr(self.env, "get_action_masks"):
+                    action_masks = self.env.get_action_masks()
+                elif hasattr(getattr(self.env, "unwrapped", self.env), "action_masks"):
+                    action_masks = getattr(self.env, "unwrapped", self.env).action_masks()
+                elif getattr(self, "fleet_config", None) is not None:
+                    action_masks = self.fleet_config.get_full_action_mask()
+            action, _ = self.model.predict(
+                observation, action_masks=action_masks, deterministic=deterministic
+            )
+        else:
+            action, _ = self.model.predict(observation, deterministic=deterministic)
+
         return np.asarray(action, dtype=np.int64).flatten()
 
     def save(self, path: Union[str, Path]) -> None:
@@ -461,10 +572,16 @@ class PPOController:
     ) -> PPOController:
         """Load saved PPO controller checkpoint into this instance."""
         target_env = env if env is not None else self.env
-        self.model = PPO.load(str(path), env=target_env, device=self.device_str)
+        try:
+            self.model = MaskablePPO.load(str(path), env=target_env, device=self.device_str)
+            self.is_maskable = True
+        except Exception:
+            self.model = PPO.load(str(path), env=target_env, device=self.device_str)
+            self.is_maskable = False
+
         if target_env is not None:
             self.env = target_env
-        logger.info(f"Loaded PPO controller checkpoint from {path}")
+        logger.info(f"Loaded PPO controller checkpoint from {path} (is_maskable={self.is_maskable})")
         return self
 
     @classmethod

@@ -59,6 +59,12 @@ from src.federated.server import (
     compute_transmission_latency,
 )
 from src.models.fastkan_model import FastKANClassifier, project_spline_weights
+from src.environment.fleet import (
+    FleetConfig,
+    generate_fleet_profiles,
+    get_tier_one_hot,
+    normalize_log_scale,
+)
 from src.partition import dirichlet_partition
 from src.utils.reproducibility import set_seed
 
@@ -157,6 +163,8 @@ class FederatedKANEnv(gym.Env):
         target_budget_ratio: Optional[float] = None,
         accuracy_metric: Optional[str] = None,
         reference_mode: Optional[str] = None,
+        fleet_config: Optional[Union[str, Path, FleetConfig]] = None,
+        use_fleet: bool = False,
         num_clients: Optional[int] = None,
         max_rounds: Optional[int] = None,
         lambda1: Optional[float] = None,
@@ -171,6 +179,20 @@ class FederatedKANEnv(gym.Env):
 
         # 1. Load configuration from YAML
         self.config = self._load_config(config_path)
+
+        # Fleet Configuration
+        if fleet_config is not None:
+            self.use_fleet = True
+            if isinstance(fleet_config, FleetConfig):
+                self.fleet_config = fleet_config
+            else:
+                self.fleet_config = FleetConfig(fleet_config)
+        elif use_fleet:
+            self.use_fleet = True
+            self.fleet_config = FleetConfig()
+        else:
+            self.use_fleet = False
+            self.fleet_config = None
 
         env_cfg = self.config.get("environment", {})
         reward_cfg = self.config.get("reward", {})
@@ -205,7 +227,9 @@ class FederatedKANEnv(gym.Env):
             self.normalize_params = bool(reward_cfg.get("normalize_params", True))
 
         ref_params_per_client = float(reward_cfg.get("baseline_params_per_client", 5349.0))
-        if baseline_budget is not None:
+        if self.use_fleet and self.fleet_config is not None:
+            self.baseline_budget = float(self.fleet_config.baseline_budget)
+        elif baseline_budget is not None:
             self.baseline_budget = float(baseline_budget)
         elif "baseline_budget" in reward_cfg and self.num_clients == env_cfg.get("num_clients", 8):
             self.baseline_budget = float(reward_cfg["baseline_budget"])
@@ -290,12 +314,13 @@ class FederatedKANEnv(gym.Env):
 
         self.num_actions_per_client = len(self.action_tuples)
 
-        # Observation Space: Matrix S_t in [-1.0, 1.0]^{N x 5}
-        # S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)]
+        # Observation Space: Matrix S_t in [-1.0, 1.0]^{N x 5} (legacy) or [-1.0, 1.0]^{N x 9} (fleet)
+        # S_i^t = [L_local^i, Var(x^i), Δτ^i, bw^i, H(y^i)] (+ 4D one-hot tier when fleet enabled)
+        obs_dim = 9 if (self.use_fleet and self.fleet_config is not None) else 5
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(self.num_clients, 5),
+            shape=(self.num_clients, obs_dim),
             dtype=np.float32,
         )
 
@@ -328,6 +353,12 @@ class FederatedKANEnv(gym.Env):
         self.hardware_profiles = create_heterogeneous_profiles(
             self.client_ids, edge_ratio=edge_ratio
         )
+        if self.use_fleet and self.fleet_config is not None:
+            self.fleet_profiles = generate_fleet_profiles(
+                seed=self.global_seed, config_path=self.fleet_config.config_path
+            )
+        else:
+            self.fleet_profiles = None
 
         self.telemetry_tracker = TelemetryTracker(
             client_ids=self.client_ids,
@@ -496,6 +527,49 @@ class FederatedKANEnv(gym.Env):
         set_seed(self.global_seed)
         self.telemetry_tracker.set_seed(self.global_seed)
 
+    def get_action_masks(self, env: Optional[Any] = None) -> np.ndarray:
+        """
+        Return action masks for sb3-contrib MaskablePPO.
+        If fleet mode is enabled, returns flat 96-element boolean mask from FleetConfig.
+        Otherwise returns all-True boolean mask.
+        """
+        if getattr(self, "use_fleet", False) and getattr(self, "fleet_config", None) is not None:
+            return self.fleet_config.get_full_action_mask()
+        return np.ones(self.num_clients * self.num_actions_per_client, dtype=bool)
+
+    def action_masks(self, env: Optional[Any] = None) -> np.ndarray:
+        """Alias for get_action_masks for sb3-contrib ActionMasker."""
+        return self.get_action_masks(env)
+
+    def _format_obs(self, telemetry_obs: np.ndarray) -> np.ndarray:
+        """
+        Format raw (N, 5) telemetry observation.
+        If fleet mode is active:
+        - Replaces latency (col 2) with log-scale normalized latency
+        - Replaces bandwidth (col 3) with log-scale normalized bandwidth
+        - Appends 4D one-hot tier ID encoding per client -> (N, 9)
+        """
+        if not getattr(self, "use_fleet", False) or getattr(self, "fleet_config", None) is None:
+            return telemetry_obs
+
+        obs_out = np.asarray(telemetry_obs, dtype=np.float32).copy()
+        for cid in range(self.num_clients):
+            lat = float(self.telemetry_tracker.clients[str(cid)].latest_latency)
+            bw = float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth)
+            obs_out[cid, 2] = normalize_log_scale(lat, min_val=0.01, max_val=10.0)
+            obs_out[cid, 3] = normalize_log_scale(bw, min_val=0.5, max_val=1000.0)
+
+        tier_one_hots = np.array(
+            [
+                get_tier_one_hot(self.fleet_config.get_tier_for_client(cid), total_tiers=4)
+                for cid in range(self.num_clients)
+            ],
+            dtype=np.float32,
+        )
+        combined = np.concatenate([obs_out, tier_one_hots], axis=-1)
+        assert np.all(np.isfinite(combined)), f"Non-finite values encountered in fleet observation: {combined}"
+        return combined
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -610,7 +684,7 @@ class FederatedKANEnv(gym.Env):
             "telemetry_summary": self.telemetry_tracker.get_summary(),
         }
 
-        return initial_obs, info
+        return self._format_obs(initial_obs), info
 
     def step(
         self,
@@ -713,27 +787,38 @@ class FederatedKANEnv(gym.Env):
             )
 
             # Compute transmission and round latency: Model_Size_MB / bw^i + compute_latency
-            bw_i = float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth)
-            c_bytes = float(active_params * 4)  # Float32 parameter bytes
-            model_size_mb = float(c_bytes / (1024.0 ** 2))
-            compute_lat = float(metrics["execution_latency"])
-
-            total_lat = compute_transmission_latency(
-                model_size_mb=model_size_mb,
-                bandwidth_mbps=bw_i,
-                compute_latency=compute_lat,
-            )
-
-            # Deadline-aware timeout check: mark stragglers
-            if self.round_timeout_seconds is not None and total_lat > self.round_timeout_seconds:
-                is_straggler = True
-                status = "straggler"
-                # Transmit straggler penalty into telemetry and reward
-                effective_lat = max(total_lat, self.straggler_latency_penalty)
-            else:
-                is_straggler = False
-                status = "active"
+            if self.use_fleet and getattr(self, "fleet_profiles", None) is not None:
+                prof = self.fleet_profiles[cid]
+                bw_i = float(prof.bandwidth_mbps)
+                compute_lat = float(metrics["execution_latency"])
+                total_lat = prof.estimate_round_time(g_i, k_i, measured_laptop_compute_sec=compute_lat)
+                fits_ram = prof.fits_memory(g_i, k_i, batch_size=self.batch_size)
+                is_straggler = total_lat > prof.deadline_seconds
+                status = "straggler" if is_straggler else "active"
                 effective_lat = total_lat
+                metrics["fits_memory"] = fits_ram
+            else:
+                bw_i = float(self.telemetry_tracker.clients[str(cid)].latest_bandwidth)
+                c_bytes = float(active_params * 4)  # Float32 parameter bytes
+                model_size_mb = float(c_bytes / (1024.0 ** 2))
+                compute_lat = float(metrics["execution_latency"])
+
+                total_lat = compute_transmission_latency(
+                    model_size_mb=model_size_mb,
+                    bandwidth_mbps=bw_i,
+                    compute_latency=compute_lat,
+                )
+
+                # Deadline-aware timeout check: mark stragglers
+                if self.round_timeout_seconds is not None and total_lat > self.round_timeout_seconds:
+                    is_straggler = True
+                    status = "straggler"
+                    # Transmit straggler penalty into telemetry and reward
+                    effective_lat = max(total_lat, self.straggler_latency_penalty)
+                else:
+                    is_straggler = False
+                    status = "active"
+                    effective_lat = total_lat
 
             metrics["is_straggler"] = is_straggler
             metrics["status"] = status
@@ -1033,7 +1118,7 @@ class FederatedKANEnv(gym.Env):
             "telemetry_summary": self.telemetry_tracker.get_summary(),
         }
 
-        return new_obs, reward, terminated, truncated, info
+        return self._format_obs(new_obs), reward, terminated, truncated, info
 
     def log_allocation_by_tier(
         self,

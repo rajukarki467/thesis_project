@@ -1,0 +1,338 @@
+{
+  "0": {
+    "client_id": 0,
+    "device_name": "Smartwatch",
+    "tier": 1,
+    "best_config": "(5,3)",
+    "best_val_macro_f1": 0.269355600089067,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(5,3)",
+        "grid_size": 5,
+        "spline_order": 3,
+        "params": 5349,
+        "val_macro_f1": 0.269355600089067,
+        "val_accuracy": 0.9571373157486424,
+        "val_balanced_accuracy": 0.30637778499232216,
+        "est_round_time_s": 5.6007,
+        "feasible": false
+      },
+      {
+        "rank": 2,
+        "config": "(5,2)",
+        "grid_size": 5,
+        "spline_order": 2,
+        "params": 4757,
+        "val_macro_f1": 0.2689604404024221,
+        "val_accuracy": 0.9489268166537368,
+        "val_balanced_accuracy": 0.30485899874393063,
+        "est_round_time_s": 5.2081,
+        "feasible": false
+      },
+      {
+        "rank": 3,
+        "config": "(3,2)",
+        "grid_size": 3,
+        "spline_order": 2,
+        "params": 3573,
+        "val_macro_f1": 0.2553058830531285,
+        "val_accuracy": 0.952288595810706,
+        "val_balanced_accuracy": 0.2937580866854507,
+        "est_round_time_s": 5.0694,
+        "feasible": false
+      }
+    ]
+  },
+  "1": {
+    "client_id": 1,
+    "device_name": "Smartwatch",
+    "tier": 1,
+    "best_config": "(5,3)",
+    "best_val_macro_f1": 0.1867654667625981,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(5,3)",
+        "grid_size": 5,
+        "spline_order": 3,
+        "params": 5349,
+        "val_macro_f1": 0.1867654667625981,
+        "val_accuracy": 0.628458753555728,
+        "val_balanced_accuracy": 0.320741590902721,
+        "est_round_time_s": 0.8215,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(3,3)",
+        "grid_size": 3,
+        "spline_order": 3,
+        "params": 4165,
+        "val_macro_f1": 0.1727929185535263,
+        "val_accuracy": 0.6567752779932764,
+        "val_balanced_accuracy": 0.31258207720967324,
+        "est_round_time_s": 0.6886,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(5,2)",
+        "grid_size": 5,
+        "spline_order": 2,
+        "params": 4757,
+        "val_macro_f1": 0.172371942956523,
+        "val_accuracy": 0.5374321179208689,
+        "val_balanced_accuracy": 0.2109082269462586,
+        "est_round_time_s": 0.7458,
+        "feasible": true
+      }
+    ]
+  },
+  "2": {
+    "client_id": 2,
+    "device_name": "Smartphone",
+    "tier": 2,
+    "best_config": "(7,2)",
+    "best_val_macro_f1": 0.2726289699534545,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(7,2)",
+        "grid_size": 7,
+        "spline_order": 2,
+        "params": 5941,
+        "val_macro_f1": 0.2726289699534545,
+        "val_accuracy": 0.9405223687613137,
+        "val_balanced_accuracy": 0.3065290561119724,
+        "est_round_time_s": 2.6904,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(5,3)",
+        "grid_size": 5,
+        "spline_order": 3,
+        "params": 5349,
+        "val_macro_f1": 0.2701104246497223,
+        "val_accuracy": 0.9570080165502974,
+        "val_balanced_accuracy": 0.30699166782193515,
+        "est_round_time_s": 2.6791,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(5,2)",
+        "grid_size": 5,
+        "spline_order": 2,
+        "params": 4757,
+        "val_macro_f1": 0.26034756206330617,
+        "val_accuracy": 0.9524825446082235,
+        "val_balanced_accuracy": 0.2976973039524893,
+        "est_round_time_s": 2.3544,
+        "feasible": true
+      }
+    ]
+  },
+  "3": {
+    "client_id": 3,
+    "device_name": "Smartphone",
+    "tier": 2,
+    "best_config": "(5,4)",
+    "best_val_macro_f1": 0.2973158464688986,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(5,4)",
+        "grid_size": 5,
+        "spline_order": 4,
+        "params": 5941,
+        "val_macro_f1": 0.2973158464688986,
+        "val_accuracy": 0.8293250581846393,
+        "val_balanced_accuracy": 0.3813503412302376,
+        "est_round_time_s": 1.0659,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(5,2)",
+        "grid_size": 5,
+        "spline_order": 2,
+        "params": 4757,
+        "val_macro_f1": 0.2905655666112022,
+        "val_accuracy": 0.7888544091026636,
+        "val_balanced_accuracy": 0.382495957401496,
+        "est_round_time_s": 0.7782,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(7,4)",
+        "grid_size": 7,
+        "spline_order": 4,
+        "params": 7125,
+        "val_macro_f1": 0.28809546561356003,
+        "val_accuracy": 0.878070855960693,
+        "val_balanced_accuracy": 0.3831985070161226,
+        "est_round_time_s": 1.0227,
+        "feasible": true
+      }
+    ]
+  },
+  "4": {
+    "client_id": 4,
+    "device_name": "Smartphone",
+    "tier": 2,
+    "best_config": "(5,3)",
+    "best_val_macro_f1": 0.24517541272945195,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(5,3)",
+        "grid_size": 5,
+        "spline_order": 3,
+        "params": 5349,
+        "val_macro_f1": 0.24517541272945195,
+        "val_accuracy": 0.8489138867339022,
+        "val_balanced_accuracy": 0.3470236657168384,
+        "est_round_time_s": 1.1209,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(5,2)",
+        "grid_size": 5,
+        "spline_order": 2,
+        "params": 4757,
+        "val_macro_f1": 0.24127164165219717,
+        "val_accuracy": 0.7638996638220843,
+        "val_balanced_accuracy": 0.3398808864000284,
+        "est_round_time_s": 0.8831,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(7,3)",
+        "grid_size": 7,
+        "spline_order": 3,
+        "params": 6533,
+        "val_macro_f1": 0.23176961924627298,
+        "val_accuracy": 0.7836177915696922,
+        "val_balanced_accuracy": 0.3461861458817756,
+        "est_round_time_s": 0.8535,
+        "feasible": true
+      }
+    ]
+  },
+  "5": {
+    "client_id": 5,
+    "device_name": "Local Clinic",
+    "tier": 3,
+    "best_config": "(7,4)",
+    "best_val_macro_f1": 0.19311498444347797,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(7,4)",
+        "grid_size": 7,
+        "spline_order": 4,
+        "params": 7125,
+        "val_macro_f1": 0.19311498444347797,
+        "val_accuracy": 0.932958365658133,
+        "val_balanced_accuracy": 0.246212379717464,
+        "est_round_time_s": 0.2191,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(7,3)",
+        "grid_size": 7,
+        "spline_order": 3,
+        "params": 6533,
+        "val_macro_f1": 0.1924747423891518,
+        "val_accuracy": 0.9268166537367468,
+        "val_balanced_accuracy": 0.24459155121818058,
+        "est_round_time_s": 0.2021,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(10,4)",
+        "grid_size": 10,
+        "spline_order": 4,
+        "params": 8901,
+        "val_macro_f1": 0.19103690685413005,
+        "val_accuracy": 0.9135634859063874,
+        "val_balanced_accuracy": 0.2410939739302532,
+        "est_round_time_s": 0.2004,
+        "feasible": true
+      }
+    ]
+  },
+  "6": {
+    "client_id": 6,
+    "device_name": "Local Clinic",
+    "tier": 3,
+    "best_config": "(7,4)",
+    "best_val_macro_f1": 0.3493800362611886,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(7,4)",
+        "grid_size": 7,
+        "spline_order": 4,
+        "params": 7125,
+        "val_macro_f1": 0.3493800362611886,
+        "val_accuracy": 0.962697181277476,
+        "val_balanced_accuracy": 0.4123682603743082,
+        "est_round_time_s": 1.7922,
+        "feasible": true
+      },
+      {
+        "rank": 2,
+        "config": "(7,3)",
+        "grid_size": 7,
+        "spline_order": 3,
+        "params": 6533,
+        "val_macro_f1": 0.29304729034628973,
+        "val_accuracy": 0.9005042668735453,
+        "val_balanced_accuracy": 0.3770983093244522,
+        "est_round_time_s": 1.5708,
+        "feasible": true
+      },
+      {
+        "rank": 3,
+        "config": "(10,3)",
+        "grid_size": 10,
+        "spline_order": 3,
+        "params": 8309,
+        "val_macro_f1": 0.2869365859862684,
+        "val_accuracy": 0.8754202223946211,
+        "val_balanced_accuracy": 0.36753009494217026,
+        "est_round_time_s": 1.7023,
+        "feasible": true
+      }
+    ]
+  },
+  "7": {
+    "client_id": 7,
+    "device_name": "Hospital Server",
+    "tier": 4,
+    "best_config": "(10,4)",
+    "best_val_macro_f1": 0.2669732469398939,
+    "top3": [
+      {
+        "rank": 1,
+        "config": "(10,4)",
+        "grid_size": 10,
+        "spline_order": 4,
+        "params": 8901,
+        "val_macro_f1": 0.2669732469398939,
+        "val_accuracy": 0.8567364882337729,
+        "val_balanced_accuracy": 0.39085221792022357,
+        "est_round_time_s": 0.1597,
+        "feasible": true
+      }
+    ]
+  }
+}
