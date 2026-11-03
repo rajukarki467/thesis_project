@@ -1,0 +1,118 @@
+# ==============================================================================
+# Heterogeneous Edge Fleet Configuration
+# Resource-Adaptive Federated KAN (8 Clients, 4 Device Tiers)
+# MIT-BIH ECG Heartbeat Classification (AAMI EC57)
+# ==============================================================================
+
+fleet:
+  name: "heterogeneous_8client_4tier"
+  num_clients: 8
+  server_reference_model: [5, 3]  # G=5, k=3 (5,349 parameters)
+  reference_mode: "fixed_5_3"     # "fixed_5_3" (primary) or "canonical_max" (10, 4)
+
+  # Full discrete configuration universe: 4 grid sizes x 3 spline orders = 12 actions
+  grid_sizes: [3, 5, 7, 10]
+  spline_orders: [2, 3, 4]
+  num_total_configs: 12
+
+  # Device Tiers (4 tiers spanning 8 edge clients)
+  tiers:
+    1:
+      tier_id: 1
+      name: "Tier 1"
+      device_name: "Smartwatch"
+      num_clients: 2
+      client_ids: [0, 1]
+      hard_mask_rule: "mask G > 5 or k > 3"
+      allowed_grid_sizes: [3, 5]
+      allowed_spline_orders: [2, 3]
+      allowed_configs:
+        - [3, 2]
+        - [3, 3]
+        - [5, 2]
+        - [5, 3]
+      start_config: [5, 3]
+      resource_ranges:
+        compute_speed_factor: [4.0, 8.0]     # Slower relative to CPU baseline (laptop = 1.0)
+        memory_budget_mb: [16.0, 32.0]        # Ultra-constrained RAM (16-32 MB)
+        bandwidth_mbps: [0.5, 2.0]           # BLE / Low-power Wi-Fi (0.5-2 Mbps)
+        energy_budget_rel: [5.0, 10.0]       # Constrained battery budget (relative scale)
+        dropout_prob: 0.10
+        deadline_seconds: 4.0
+
+    2:
+      tier_id: 2
+      name: "Tier 2"
+      device_name: "Smartphone"
+      num_clients: 3
+      client_ids: [2, 3, 4]
+      hard_mask_rule: "mask G > 7"
+      allowed_grid_sizes: [5, 7]
+      allowed_spline_orders: [2, 3, 4]
+      allowed_configs:
+        - [5, 2]
+        - [5, 3]
+        - [5, 4]
+        - [7, 2]
+        - [7, 3]
+        - [7, 4]
+      start_config: [5, 3]
+      resource_ranges:
+        compute_speed_factor: [1.5, 3.0]     # Mobile SoC (1.5-3.0x laptop latency)
+        memory_budget_mb: [128.0, 256.0]     # Mobile RAM budget (128-256 MB)
+        bandwidth_mbps: [5.0, 20.0]          # LTE / 5G / Wi-Fi (5-20 Mbps)
+        energy_budget_rel: [20.0, 50.0]      # Rechargeable phone battery
+        dropout_prob: 0.05
+        deadline_seconds: 3.0
+
+    3:
+      tier_id: 3
+      name: "Tier 3"
+      device_name: "Local Clinic"
+      num_clients: 2
+      client_ids: [5, 6]
+      hard_mask_rule: "mask G < 7 or k < 3"
+      allowed_grid_sizes: [7, 10]
+      allowed_spline_orders: [3, 4]
+      allowed_configs:
+        - [7, 3]
+        - [7, 4]
+        - [10, 3]
+        - [10, 4]
+      start_config: [7, 3]                   # Closest allowed config to (5, 3) by param count (6,533 vs 5,349)
+      resource_ranges:
+        compute_speed_factor: [0.8, 1.2]     # Near laptop performance
+        memory_budget_mb: [1024.0, 2048.0]   # Clinic workstation (1-2 GB allocated)
+        bandwidth_mbps: [50.0, 100.0]        # Institutional broadband (50-100 Mbps)
+        energy_budget_rel: [500.0, 500.0]    # Mains powered (large budget)
+        dropout_prob: 0.01
+        deadline_seconds: 2.0
+
+    4:
+      tier_id: 4
+      name: "Tier 4"
+      device_name: "Hospital Server"
+      num_clients: 1
+      client_ids: [7]
+      hard_mask_rule: "unrestricted to max capacity"
+      allowed_grid_sizes: [10]
+      allowed_spline_orders: [4]
+      allowed_configs:
+        - [10, 4]
+      start_config: [10, 4]                  # Sole allowed config
+      resource_ranges:
+        compute_speed_factor: [0.2, 0.4]     # High-performance server (0.2-0.4x)
+        memory_budget_mb: [8192.0, 16384.0]  # Enterprise server RAM (8-16 GB)
+        bandwidth_mbps: [200.0, 1000.0]      # High-speed fiber (200-1000 Mbps)
+        energy_budget_rel: [1000000.0, 1000000.0] # Unlimited mains power
+        dropout_prob: 0.00
+        deadline_seconds: 1.5
+
+  # Baseline fleet reference budgets for N=8
+  budgets:
+    formula: "592 * (G + k) + 613"
+    reference_model_gk: [5, 3]
+    reference_params_per_client: 5349
+    baseline_budget_8clients: 42792          # 8 * 5349 (B_ref)
+    all_max_budget_8clients: 71208           # 8 * 8901 for (10, 4)
+    all_min_budget_8clients: 28584           # 8 * 3573 for (3, 2)
