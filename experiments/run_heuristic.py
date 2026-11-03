@@ -2,20 +2,22 @@
 Experiment Runner: Rule-Based Heuristic Adaptive KAN across Dirichlet Alphas.
 
 Features:
-- Runs federated rounds using the deterministic quantile-based HeuristicController.
+- Runs federated rounds using the deterministic quantile-based / tier-aware HeuristicController.
+- Supports heterogeneous edge fleet masks via --fleet configs/fleet.yaml.
 - Evaluates across Dirichlet non-IID alphas in {0.1, 0.5, 1.0}.
 - Evaluates global model on held-out patient-level test split (18,175 beats).
 - Tracks accuracy, macro F1, parameter counts, latency, and chosen (G_i, k_i) traces.
+- Final per-client assignment: mode of last 5 rounds, best validation config, disagreement flags.
 - Saves results to results/adaptive_kan/heuristic_results_{alpha}.csv and JSON summary.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
 import json
 import logging
-import os
 from pathlib import Path
 import sys
 import time
@@ -32,6 +34,7 @@ import yaml
 
 from src.controllers.heuristic import HeuristicController
 from src.environment.f1_env import FederatedKANEnv, action_to_gk
+from src.environment.fleet import FleetConfig, compute_param_count
 from src.utils.reproducibility import set_seed
 
 # Configure logging
@@ -47,32 +50,15 @@ def run_heuristic_simulation(
     alpha: float,
     num_rounds: int = 10,
     config_path: str = "configs/ppo.yaml",
+    fleet_config_path: Optional[str] = "configs/fleet.yaml",
+    reference_mode: str = "fixed_5_3",
     output_dir: str = "results/adaptive_kan",
     seed: int = 42,
     verbose: bool = True,
+    tier_report: bool = True,
 ) -> Dict[str, Any]:
     """
     Execute federated simulation using HeuristicController for a specific Dirichlet alpha.
-
-    Parameters
-    ----------
-    alpha : float
-        Dirichlet non-IID skew parameter.
-    num_rounds : int
-        Number of federated communication rounds.
-    config_path : str
-        Path to PPO / heuristic YAML configuration.
-    output_dir : str
-        Directory to save CSV and JSON results.
-    seed : int
-        RNG seed for deterministic execution.
-    verbose : bool
-        Whether to print round logs.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Summary dictionary containing final metrics and round trajectory.
     """
     out_dir = PROJECT_ROOT / output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -81,6 +67,15 @@ def run_heuristic_simulation(
 
     set_seed(seed)
 
+    use_tier_masks = bool(fleet_config_path is not None)
+    fleet_cfg = FleetConfig(fleet_config_path) if use_tier_masks else None
+
+    # Reference grid and spline order based on reference_mode
+    if reference_mode == "canonical_max":
+        ref_g, ref_k = (10, 4)
+    else:
+        ref_g, ref_k = (5, 3)
+
     # 1. Instantiate Federated Environment and Heuristic Controller
     env = FederatedKANEnv(
         config_path=config_path,
@@ -88,7 +83,17 @@ def run_heuristic_simulation(
         max_rounds=num_rounds,
         seed=seed,
     )
-    controller = HeuristicController(config_path=config_path)
+    # Configure environment reference model if canonical_max requested
+    if reference_mode == "canonical_max":
+        env.ref_grid_size = 10
+        env.ref_spline_order = 4
+
+    controller = HeuristicController(
+        config_path=config_path,
+        fleet_config_path=fleet_config_path,
+        use_tier_masks=use_tier_masks,
+        seed=seed,
+    )
 
     # 2. Reset Environment
     obs, info = env.reset(seed=seed)
@@ -104,6 +109,8 @@ def run_heuristic_simulation(
 
     records: List[Dict[str, Any]] = []
     # Record round 0
+    start_configs = [fleet_cfg.get_start_config_for_client(cid) if fleet_cfg else (5, 3) for cid in range(env.num_clients)]
+    start_params_tot = sum(compute_param_count(g, k) for g, k in start_configs)
     records.append({
         "round": 0,
         "alpha": alpha,
@@ -112,13 +119,13 @@ def run_heuristic_simulation(
         "test_macro_f1": initial_f1,
         "delta_accuracy": 0.0,
         "step_reward": 0.0,
-        "total_parameters": env.num_clients * 5349,
-        "mean_parameters_per_client": 5349.0,
+        "total_parameters": start_params_tot,
+        "mean_parameters_per_client": start_params_tot / env.num_clients,
         "total_latency_seconds": 0.0,
         "mean_latency_seconds": 0.0,
         "step_duration_seconds": 0.0,
-        "client_configs": "[(5, 3)] * 8",
-        "client_actions": "[4] * 8",
+        "client_configs": str(start_configs),
+        "client_actions": str([controller.predict(obs, round_num=0)[i] for i in range(env.num_clients)]),
     })
 
     total_time_start = time.perf_counter()
@@ -128,7 +135,7 @@ def run_heuristic_simulation(
         step_start = time.perf_counter()
 
         # Controller selects actions based on current telemetry state S^t
-        actions = controller.predict(obs)
+        actions = controller.predict(obs, round_num=r)
 
         # Step environment
         obs, reward, terminated, truncated, step_info = env.step(actions)
@@ -173,17 +180,40 @@ def run_heuristic_simulation(
 
     total_duration = time.perf_counter() - total_time_start
 
-    # 4. Save CSV and JSON
+    # 4. Extract Final Assignments per client (Mode of last 5 rounds, best val F1)
+    final_assignments = controller.get_final_assignments()
+
+    # 5. Save CSV and JSON
     df = pd.DataFrame(records)
     csv_path = out_dir / f"heuristic_results_{alpha}.csv"
     df.to_csv(csv_path, index=False)
     logger.info(f"Saved round-by-round metrics to {csv_path}")
+
+    final_assign_path = out_dir / f"heuristic_final_assignments_alpha_{alpha}.json"
+    # Format assignments for json serialization
+    formatted_assign = {}
+    for cid, info in final_assignments.items():
+        formatted_assign[int(cid)] = {
+            "client_id": int(cid),
+            "tier": int(info["tier"]),
+            "device_name": fleet_cfg.tiers_raw[info["tier"]]["device_name"] if fleet_cfg else f"Tier {info['tier']}",
+            "mode_last_5": list(info["mode_last_5"]),
+            "mode_params": int(info["mode_params"]),
+            "best_val_f1_config": list(info["best_val_f1_config"]),
+            "best_params": int(info["best_params"]),
+            "disagreement": bool(info["disagreement"]),
+        }
+
+    with open(final_assign_path, "w") as f:
+        json.dump(formatted_assign, f, indent=2)
+    logger.info(f"Saved per-client final assignments to {final_assign_path}")
 
     summary = {
         "controller": "HeuristicController",
         "alpha": alpha,
         "num_rounds": num_rounds,
         "num_clients": env.num_clients,
+        "reference_mode": reference_mode,
         "seed": seed,
         "total_execution_time_seconds": total_duration,
         "initial_accuracy": initial_acc,
@@ -194,12 +224,26 @@ def run_heuristic_simulation(
         "mean_parameters_per_round": float(df["total_parameters"].iloc[1:].mean()),
         "mean_latency_per_round": float(df["total_latency_seconds"].iloc[1:].mean()),
         "total_reward": float(df["step_reward"].sum()),
+        "final_client_assignments": formatted_assign,
     }
 
     json_path = out_dir / f"heuristic_summary_{alpha}.json"
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
     logger.info(f"Saved summary to {json_path}")
+
+    if tier_report:
+        print("\n" + "=" * 80)
+        print(f"HEURISTIC CONTROLLER PER-CLIENT FINAL ASSIGNMENTS (Alpha = {alpha})")
+        print("=" * 80)
+        for cid, info in formatted_assign.items():
+            flag = " [DISAGREEMENT]" if info["disagreement"] else " [CONVERGED]"
+            print(
+                f"Client {cid:2d} | Tier {info['tier']} ({info['device_name']:<15}): "
+                f"Mode Last 5 = ({info['mode_last_5'][0]},{info['mode_last_5'][1]}) [{info['mode_params']} params] | "
+                f"Best Val F1 = ({info['best_val_f1_config'][0]},{info['best_val_f1_config'][1]}){flag}"
+            )
+        print("=" * 80 + "\n")
 
     return summary
 
@@ -215,6 +259,9 @@ def main():
     )
     parser.add_argument("--num_rounds", type=int, default=10, help="Number of federated communication rounds")
     parser.add_argument("--config", type=str, default="configs/ppo.yaml", help="Path to YAML config")
+    parser.add_argument("--fleet", type=str, default="configs/fleet.yaml", help="Path to fleet YAML config")
+    parser.add_argument("--reference_mode", type=str, default="fixed_5_3", choices=["fixed_5_3", "canonical_max"], help="Server reference mode")
+    parser.add_argument("--tier_report", action="store_true", default=True, help="Print per-client tier report")
     parser.add_argument("--output_dir", type=str, default="results/adaptive_kan", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed")
     parser.add_argument("--dry-run", action="store_true", help="Quick 2-round dry-run validation")
@@ -232,8 +279,11 @@ def main():
             alpha=a,
             num_rounds=num_rounds,
             config_path=args.config,
+            fleet_config_path=args.fleet,
+            reference_mode=args.reference_mode,
             output_dir=args.output_dir,
             seed=args.seed,
+            tier_report=args.tier_report,
         )
         summaries.append(summary)
 

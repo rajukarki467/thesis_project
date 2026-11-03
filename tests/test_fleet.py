@@ -275,3 +275,46 @@ def test_tier_one_hot():
         assert oh.shape == (4,)
         assert np.sum(oh) == 1.0
         assert oh[tier - 1] == 1.0
+
+
+# ==============================================================================
+# 8. Tiered Heuristic Controller Verification
+# ==============================================================================
+
+def test_tiered_heuristic_controller_start_and_masks():
+    from src.controllers.heuristic import HeuristicController
+
+    ctrl = HeuristicController(use_tier_masks=True)
+    fleet_cfg = FleetConfig()
+
+    obs = np.zeros((8, 5), dtype=np.float32)
+
+    # Round 0: Start configs
+    act_0 = ctrl.predict(obs, round_num=0)
+    cfg_0 = [ACTION_TUPLES[a] for a in act_0]
+
+    assert cfg_0[0] == (5, 3)
+    assert cfg_0[1] == (5, 3)
+    assert cfg_0[2] == (5, 3)
+    assert cfg_0[3] == (5, 3)
+    assert cfg_0[4] == (5, 3)
+    assert cfg_0[5] == (7, 3)
+    assert cfg_0[6] == (7, 3)
+    assert cfg_0[7] == (10, 4)
+
+    # 10 rounds: All actions must satisfy tier masks
+    for r in range(1, 11):
+        obs_rand = np.random.uniform(-0.8, 0.8, size=(8, 5)).astype(np.float32)
+        actions = ctrl.predict(obs_rand, round_num=r)
+        for cid in range(8):
+            mask = fleet_cfg.get_action_mask_for_client(cid)
+            assert mask[actions[cid]], f"Client {cid} chose illegal action {actions[cid]} in round {r}!"
+
+    final = ctrl.get_final_assignments()
+    assert len(final) == 8
+    for cid in range(8):
+        assert "mode_last_5" in final[cid]
+        assert "best_val_f1_config" in final[cid]
+        assert "disagreement" in final[cid]
+        assert final[cid]["mode_last_5"] in fleet_cfg.get_allowed_configs_for_tier(final[cid]["tier"])
+
